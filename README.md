@@ -50,6 +50,7 @@ Every session is a Clawd with three or four lines beside it: its name, what it i
 
 - **Subagents** show as smaller Clawds under the session that started them, with their type and task ("Explore · Map the theme tokens"), at most 8 at a time. Each stays 12 seconds after it finishes.
 - **Workflows** get a view of their own: their agents in two columns under the workflow's phases, each a tiny Clawd beside its name, what it is doing and the tokens it has used. Each phase has a line with its agents' counts, its time and its tokens. A finished phase folds into one line, checked off in green or crossed off in red, and the phase lines go 3 minutes after the workflow's last agent finishes. While a session runs a workflow, its Clawd conducts the crowd from a podium.
+- **A session waiting on its helpers**, between steps of its own, shows "Waiting on 2 helpers" and delegates (or rallies, for a workflow) rather than thinking; a tool call or step of its own shows as itself.
 - **A session at work in the background**, such as a workflow running between phases, shows "Working in the background" rather than napping.
 
 ## The Clawds

@@ -12,7 +12,7 @@
       "name": "clawd-crew",
       "source": "./",
       "description": "Every running Claude Code session and subagent as a little animated Clawd, with its model, time working and token usage",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "author": {
         "name": "Hudson",
         "url": "https://github.com/hudcolighting"

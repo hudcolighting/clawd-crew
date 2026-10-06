@@ -543,13 +543,24 @@ const isPhaseSnap = (value: unknown): value is PhaseSnap => {
 
 const runningHelperCount = (now: number) => [...me.helpers.values()].filter(h => h.status === 'running' && isShown(h, now)).length
 
+const waitingOn = (running: number): Doing => ({ mood: 'delegating', detail: `Waiting on ${running} helper${running === 1 ? '' : 's'}` })
+
 const selfDoing = (entry: Entry | undefined, now: number): { doing: Doing; since?: number } => {
   if (me.compacting) return { doing: { mood: 'compacting', detail: 'Compacting the conversation' }, since: me.busySince }
   if (entry?.status === 'waiting') return { doing: waitingDoing(entry), since: entry.statusUpdatedAt }
   if (me.flash && now < me.flash.until) return { doing: { mood: me.flash.mood, detail: me.flash.detail }, since: me.idleSince }
-  if (me.busySince !== undefined) return { doing: latestTool(me.main) ?? me.main.doing, since: me.busySince }
+  if (me.busySince !== undefined) {
+    const own = latestTool(me.main)
+    if (own) return { doing: own, since: me.busySince }
+    // Its turn goes on, but between steps with no tool of its own under way
+    // it does nothing but wait on its helpers: a background agent sent off,
+    // a workflow running, and the model waits for them to come back.
+    const running = me.main.stepping === 0 ? runningHelperCount(now) : 0
+    if (running > 0) return { doing: waitingOn(running), since: me.busySince }
+    return { doing: me.main.doing, since: me.busySince }
+  }
   const running = runningHelperCount(now)
-  if (running > 0) return { doing: { mood: 'delegating', detail: `Waiting on ${running} helper${running === 1 ? '' : 's'}` }, since: me.idleSince }
+  if (running > 0) return { doing: waitingOn(running), since: me.idleSince }
   // Its turn is over but the session is busy: something it started runs on in
   // the background (a workflow between phases, say). At work, not asleep.
   if (entry?.status === 'busy') return { doing: BACKGROUND, since: me.idleSince }

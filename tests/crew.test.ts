@@ -403,9 +403,10 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
   expect(mine).toContain('84k ctx (42%) · 12k out · $1.23')
   // The engine now reads the week at 70% used; the peer's 81% still stands.
   expect(mine).toContain('19% left')
-  // Back to thinking a second after typing began: the words follow at once,
-  // the animation holds a moment rather than flickering between the two.
-  expect(mine).toContain('Thinking…')
+  // Between steps, with the helper sent off, it waits on it: the words
+  // follow at once, the animation holds a moment rather than flickering.
+  expect(mine).toContain('Waiting on 1 helper')
+  expect(mine).not.toContain('Thinking…')
   expect((await desk.find({ type: 'Client', key: own }))?.props.props).toEqual({ mood: 'typing', size: 'session' })
 
   await $.turn.complete({ answer: 'done', durationMs: 4_000, isAborted: false, turnId: 'h1', agentId: 'helper-1', reason: 'answer' })
@@ -659,7 +660,7 @@ const pair = async (
   $: Parameters<Parameters<typeof test>[2]>[0],
   on: Parameters<Parameters<typeof test>[2]>[1],
   own: { status: string; statusUpdatedAt: number },
-  { seed = {}, ticks = 3, answer = [] }: { seed?: Record<string, string>; ticks?: number; answer?: SessionRateLimit[] } = {},
+  { seed = {}, ticks = 3, answer = [], dirs = {} }: { seed?: Record<string, string>; ticks?: number; answer?: SessionRateLimit[]; dirs?: Record<string, string[]> } = {},
 ) => {
   const rows = {
     '200.json': { pid: 200, sessionId: PEER, cwd: 'C:\\work\\weather', startedAt: NOW - 7_200_000, name: 'Weather app', status: 'busy', statusUpdatedAt: NOW - 5_000 },
@@ -703,6 +704,8 @@ const pair = async (
   on('fs.stat', (_$, e) => (files.has(e.path) ? { value: { kind: 'file', size: files.get(e.path)!.length, mtimeMs: NOW - 1_000, isLink: false } } : { deny: 'ENOENT' }))
   on('fs.list', (_$, e) => {
     if (e.path === SESSIONS) return { value: Object.keys(rows).map(name => ({ name, kind: 'file', size: 100, mtimeMs: NOW, isLink: false })) }
+    const folders = dirs[e.path]
+    if (folders) return { value: folders.map(name => ({ name, kind: 'dir', size: 0, mtimeMs: 0, isLink: false })) }
     return { deny: 'ENOENT' }
   })
   on('process.run', (_$, e) => {
@@ -958,6 +961,93 @@ test('clicks in quick succession are one press', { timeoutMs: 30_000 }, async ($
   await session.clock.advance(1)
   await session.desk.press({ key: 'settings-done' })
   expect(await isOpen()).toBe(false)
+})
+
+test('a session waiting on its helpers delegates', { timeoutMs: 30_000 }, async ($, on) => {
+  // Its turn goes on, but between steps with no tool of its own under way
+  // it does nothing but wait on the helpers it sent off.
+  let isHeld = false
+  let stepGate: (() => void) | undefined
+  let toolGate: (() => void) | undefined
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_$, e) {
+    yield { kind: 'thinking', index: 0, text: 'hmm' }
+    if (isHeld && e.agentId === undefined) {
+      await new Promise<void>(resolve => {
+        stepGate = resolve
+      })
+    }
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'tool_use',
+      usage: { model: 'claude-opus-5-5', input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 0 },
+    }
+  })
+  on('tool.call', async (_$, e) => {
+    if (isHeld && e.tool === 'Read') {
+      await new Promise<void>(resolve => {
+        toolGate = resolve
+      })
+    }
+    return { result: 'ok', text: 'ok' }
+  })
+  on('agent.spawn', () => ({ model: 'claude-haiku-4-5-20251001', agentId: 'bg1' }))
+  const seed = {
+    [`${OWN_PROJECT}\\${SELF}.jsonl`]: 'x',
+    [`${OWN_RUNS}\\wf_1\\agent-wf1.meta.json`]: JSON.stringify({ agentType: 'workflow-subagent', description: 'write:layout', workflowPhase: 'Write' }),
+  }
+  const session = await pair($, on, { status: 'busy', statusUpdatedAt: NOW - 5_000 }, { seed, dirs: { [OWN_RUNS]: ['wf_1'] } })
+  const own = async () => (await session.desk.find({ type: 'Client', key: `sprite:${SELF}` }))?.props.props
+  const published = () => JSON.parse(session.files.get(`${LIVE}\\${SELF}.json`) ?? '{}')
+  // What its own row says it is doing, after the pane has caught up.
+  const settle = async () => {
+    for (let i = 0; i < 3; i++) await session.clock.advance(1_000)
+    const texts = await session.texts()
+    return texts[texts.indexOf('Clawd mod (this one)') + 1]
+  }
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 2 })) {
+    // drain
+  }
+  // It sends a subagent off into the background and waits for it.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'toolu_bg', prompt: 'look around', description: 'Survey the repo', subagent_type: 'Explore', run_in_background: true } as never)
+  await $.agent.spawn({ tool_use_id: 'toolu_bg', prompt: 'look around', description: 'Survey the repo', subagentType: 'Explore', background: true } as never)
+  expect(await settle()).toBe('Waiting on 1 helper')
+  expect(await session.texts()).toContain('Explore · Survey the repo')
+  expect(await own()).toMatchObject({ mood: 'delegating' })
+  expect(published()).toMatchObject({ mood: 'delegating', detail: 'Waiting on 1 helper' })
+  // While a step of its own runs, it is thinking, helpers or not.
+  isHeld = true
+  const slow = (async () => {
+    for await (const _ of $.turn.step({ turnId: 't1', index: 1, model: 'claude-opus-5-5', messageCount: 4 })) {
+      // drain
+    }
+  })()
+  expect(await settle()).toBe('Thinking…')
+  stepGate?.()
+  await slow
+  expect(await settle()).toBe('Waiting on 1 helper')
+  // A tool call of its own comes first.
+  const reading = $.tool.call({ tool: 'Read', tool_use_id: 'toolu_read', file_path: 'C:\\work\\clawd-mod\\app.ts' })
+  expect(await settle()).toBe('Reading app.ts')
+  toolGate?.()
+  await reading
+  isHeld = false
+  expect(await settle()).toBe('Waiting on 1 helper')
+  // The helper done, with nothing left to wait on, it thinks again.
+  await $.turn.complete({ answer: 'found it', durationMs: 5_000, isAborted: false, turnId: 'h1', agentId: 'bg1', reason: 'answer' })
+  expect(await settle()).toBe('Thinking…')
+  // A workflow's agent at work: it waits as the one leading the crowd.
+  for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: 'claude-opus-5-5', messageCount: 2, agentId: 'wf1' })) {
+    // drain
+  }
+  for (let i = 0; i < 2; i++) await session.clock.advance(1_000)
+  expect(await settle()).toBe('Waiting on 1 helper')
+  expect(await session.texts()).toContain('write:layout')
+  expect(await own()).toMatchObject({ mood: 'rallying' })
 })
 
 test('surfaces without modules draw the Clawds as SVGs', { timeoutMs: 30_000 }, async ($, on) => {
