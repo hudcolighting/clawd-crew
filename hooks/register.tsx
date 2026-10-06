@@ -4,7 +4,7 @@
 // under a header of the account's usage limits and the crew's totals.
 
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
 
 import type { CrewChip, CrewCrowd, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
 import { COLUMNS, ICON_COLUMNS, ICON_ROWS, ROWS, cellsOf, iconCells } from './cells'
@@ -383,11 +383,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const crew = await read($, view)
     const isTerminal = e.surface === 'terminal'
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
-    // The desktop's surface modules, taken here as the other elements are:
-    // each Client below names its module as a fixed path. Mobile and VS Code
-    // have no Client, and nothing draws one there.
-    const { Client } = $.ui.resolve(e) as Elements['desktop']
+    // Client draws the desktop's surface modules, each named below as a fixed
+    // path. The phone's and the editor's tables have no Client, and nothing
+    // draws one there.
+    // @ts-expect-error Client is on the desktop's and the terminal's tables alone
+    const { Box, Text, Button, Link, Client } = $.ui.resolve(e)
 
     // One press, however many clicks arrive together.
     const pressOnce = async (act: () => Promise<void>) => {
