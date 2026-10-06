@@ -1,6 +1,6 @@
 {
   "name": "clawd-crew",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Every running Claude Code session and subagent as a little animated Clawd, with its model, time working and token usage",
   "author": {
     "name": "Hudson",
@@ -8,6 +8,10 @@
   },
   "homepage": "https://github.com/hudcolighting/clawd-crew",
   "repository": "https://github.com/hudcolighting/clawd-crew",
+  "documentationUrl": "https://github.com/hudcolighting/clawd-crew#readme",
+  "supportUrl": "mailto:dev@hudco.lighting",
+  "privacyPolicyUrl": "https://github.com/hudcolighting/clawd-crew#what-it-does-on-your-machine",
+  "termsOfServiceUrl": "https://github.com/hudcolighting/clawd-crew/blob/main/LICENSE",
   "license": "GPL-3.0-or-later",
   "keywords": ["sessions", "subagents", "workflows", "usage limits", "pixel art"],
   "icon": "./media/icon.png",

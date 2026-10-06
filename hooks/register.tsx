@@ -4,7 +4,7 @@
 // under a header of the account's usage limits and the crew's totals.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
 
 import type { CrewChip, CrewCrowd, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
 import { COLUMNS, ICON_COLUMNS, ICON_ROWS, ROWS, cellsOf, iconCells } from './cells'
@@ -383,11 +383,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const crew = await read($, view)
     const isTerminal = e.surface === 'terminal'
-    // Client draws a surface module, each named below as a fixed path in a
-    // plain call, so the path stands in the call itself. The phone's and the
-    // editor's tables have no Client, and nothing draws one there.
-    // @ts-expect-error Client is on the desktop's and the terminal's tables alone
-    const { Box, Text, Button, Link, Client } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    // The desktop's table: its Client draws a surface module, each named
+    // below as a fixed path in a plain call on the table. The phone's and
+    // the editor's tables have no Client, and nothing draws one there.
+    const desktop = $.ui.resolve(e) as Elements['desktop']
 
     // One press, however many clicks arrive together.
     const pressOnce = async (act: () => Promise<void>) => {
@@ -747,16 +747,15 @@ export const register: Register = on => {
       if (e.surface !== 'desktop' || crew.style === 'svg') return undefined
       return {
         sprite: (member: CrewMember) =>
-          Client({
+          desktop.Client({ module: './sprite-client.tsx',
             key: `sprite:${member.key}`,
-            module: './sprite-client.tsx',
             props: { mood: animOf(member.mood), size: member.isAgent ? 'helper' : 'session' },
             width: member.isAgent ? 9 : 12,
             height: member.isAgent ? 4 : 5,
           }),
-        chip: (chip: CrewChip) => Client({ key: `sprite:${chip.key}`, module: './sprite-client.tsx', props: { mood: animOf(chip.mood), size: 'tiny' }, width: 6, height: 3 }),
-        preview: (name: string) => Client({ key: `preview:${name}`, module: './sprite-client.tsx', props: { mood: name, size: 'helper' }, width: 9, height: 4 }),
-        icon: Client({ key: 'icon', module: './icon-client.tsx', width: 10, height: 5 }),
+        chip: (chip: CrewChip) => desktop.Client({ module: './sprite-client.tsx', key: `sprite:${chip.key}`, props: { mood: animOf(chip.mood), size: 'tiny' }, width: 6, height: 3 }),
+        preview: (name: string) => desktop.Client({ module: './sprite-client.tsx', key: `preview:${name}`, props: { mood: name, size: 'helper' }, width: 9, height: 4 }),
+        icon: desktop.Client({ module: './icon-client.tsx', key: 'icon', width: 10, height: 5 }),
       }
     })()
     const sprite = (member: CrewMember) =>
