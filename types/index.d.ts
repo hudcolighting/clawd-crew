@@ -110,6 +110,8 @@ export type CrewView = {
   animations?: Record<string, string>
   /** Whether the pane shows its settings in place of the crew. */
   isSetting?: boolean
+  /** Whether new and reopened sessions open the pane by themselves. */
+  opensItself?: boolean
   /** Which page of the settings it shows, from 0. */
   settingsPage?: number
 }

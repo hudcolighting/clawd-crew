@@ -7,7 +7,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
 
 import type { CrewChip, CrewCrowd, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
-import { COLUMNS, ROWS, cellsOf } from './cells'
+import { COLUMNS, ICON_COLUMNS, ICON_ROWS, ROWS, cellsOf, iconCells } from './cells'
 import {
   type Io,
   buildView,
@@ -27,6 +27,7 @@ import {
   shouldAskLimits,
   track,
 } from './crew'
+import { iconSvg } from './icon.js'
 import { VARIANTS } from './sprites.js'
 import { clawdSvg } from './svg.js'
 import { isUsageLeader, pollUsage, releaseUsage } from './usage'
@@ -144,10 +145,30 @@ const mounted = new Map<string, { mood: string; frame: number }>()
 let picks: Record<string, string> = {}
 let isSetting = false
 let settingsPage = 0
+// Whether new and reopened sessions open the pane by themselves, as the
+// settings set it for every session (kept in the store as `hidden`).
+let opensItself = true
+
+// Each Button is one lasting element, made once for each look, so it keeps
+// its press handle from drawing to drawing. The desktop holds a new drawing
+// back while the mouse button is down and sends the click to the drawing on
+// screen, so a Button made afresh in each drawing has a new handle by then
+// and the click lands nowhere. Clicking into the pane draws it again (it
+// takes the focus), so that was every first click. A press runs what the
+// latest drawing set for its key.
+type ButtonLook = { plain?: true; dimColor?: boolean; variant?: 'primary' }
+const buttons = new Map<string, RenderElement>()
+const actions = new Map<string, () => void>()
+// A press this soon after the last one is that press again (a double
+// click, or a mouse sending one click twice), and does nothing.
+const PRESS_GAP_MS = 300
+let pressedAt = Number.NEGATIVE_INFINITY
+// Where the credit under the settings links.
+const MAKER_URL = 'https://github.com/hudcolighting'
 
 // Builds the view and draws it again if anything it shows has changed.
 const refresh = async ($: EngineInterface, now: number) => {
-  const next: CrewView = { ...buildView(now, style), animations: picks, isSetting, settingsPage }
+  const next: CrewView = { ...buildView(now, style), animations: picks, isSetting, settingsPage, opensItself }
   const text = JSON.stringify(next)
   if (text === shown) return
   shown = text
@@ -197,8 +218,11 @@ const tick = async ($: EngineInterface, io: Io) => {
       track.measured(usage.context, usage.cost, usage.rateLimits)
     }
     if (ticks % 5 === 1) void pollUsage(io, me.sessionId, now)
-    // A pick made in another session's settings.
-    if (ticks % 5 === 3) picks = await loadAnimations(io)
+    // A setting changed in another session's settings.
+    if (ticks % 5 === 3) {
+      picks = await loadAnimations(io)
+      opensItself = (await $.store.get('hidden')) !== true
+    }
     if (ticks % 4 === 2) void peekPeers(io, now)
     if (ticks % 30 === 6 && isUsageLeader()) void askLimits($, io)
     await publish(io, now)
@@ -237,6 +261,7 @@ export const register: Register = on => {
     track.sessionStarted(await $.session.id(), e.cwd)
     style = (await $.store.get('style')) === 'svg' ? 'svg' : 'pixels'
     await restore(io, await $.clock.now())
+    opensItself = (await $.store.get('hidden')) !== true
     picks = await loadAnimations(io)
     await $.command.register({
       name: 'clawds',
@@ -330,6 +355,7 @@ export const register: Register = on => {
   on('command.run', { command: 'clawds' }, async ($, e) => {
     const args = e.args.trim().toLowerCase()
     if (/^(hide|close|off)$/.test(args)) {
+      opensItself = false
       await $.store.set('hidden', true)
       await $.ui.close({ id: PANE })
       return { text: 'Clawd Crew is off duty. Run /clawds to call them back.' }
@@ -346,15 +372,9 @@ export const register: Register = on => {
             : 'Clawd Crew now draws its sprites as boxes of color, animated without redraws.',
       }
     }
-    await $.store.set('hidden', false)
     await $.store.set('wanted', true)
     const opened = await $.ui.open({ id: PANE, title: TITLE, columns: DOCK_COLUMNS })
     return { text: opened.isPlaced ? 'Clawd Crew is on duty.' : `Clawd Crew shows up once there is room: ${opened.reason}` }
-  })
-
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    if (e.origin.kind === 'person') await $.store.set('hidden', true)
-    return next(e)
   })
 
   // A header of usage bars and totals, then one group per session: its own
@@ -363,7 +383,32 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const crew = await read($, view)
     const isTerminal = e.surface === 'terminal'
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
+
+    // One press, however many clicks arrive together.
+    const pressOnce = async (act: () => Promise<void>) => {
+      const now = await $.clock.now()
+      if (now - pressedAt < PRESS_GAP_MS) return
+      pressedAt = now
+      await act()
+    }
+    // A Button, as the lasting element for its look; `act` is what pressing
+    // it does now.
+    const button = (key: string, label: string, look: ButtonLook, act: () => Promise<void>) => {
+      actions.set(key, () => void pressOnce(act))
+      const id = JSON.stringify([e.surface, key, label, look])
+      let made = buttons.get(id)
+      if (!made) {
+        if (buttons.size > 400) buttons.clear()
+        made = (
+          <Button key={key} {...look} onPress={() => actions.get(key)?.()}>
+            {label}
+          </Button>
+        )
+        buttons.set(id, made)
+      }
+      return made
+    }
 
     // The animation a mood is drawn with: the one picked for it, if it is
     // one of that mood's.
@@ -539,9 +584,7 @@ export const register: Register = on => {
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
           {header}
         </Box>
-        <Button key="settings" plain onPress={() => void toggleSettings()}>
-          ⚙
-        </Button>
+        {button('settings', '⚙', { plain: true }, toggleSettings)}
       </Box>
     )
     // A pick, kept for every session; its own animation is no pick at all.
@@ -553,31 +596,53 @@ export const register: Register = on => {
     }
     // The settings, a page of moods at a time: each mood, what it means, and
     // its animations, each shown playing where the surface can, with a
-    // button under it to pick it; the arrows turn the page.
+    // button under it to pick it; the arrows turn the page. At the foot, the
+    // credit beside the Clawd Crew icon, drawn as the surface draws Clawds.
     const pages = Math.ceil(MOODS.length / MOODS_PER_PAGE)
     const page = crew.settingsPage ?? 0
-    const turn = async (by: number) => {
-      settingsPage = Math.min(Math.max(page + by, 0), pages - 1)
+    // Whether the pane opens by itself, for every session; a terminal's
+    // too, which otherwise waits to be asked once.
+    const setOpensItself = async (isOn: boolean) => {
+      opensItself = isOn
+      await $.store.set('hidden', !isOn)
+      if (isOn) await $.store.set('wanted', true)
       await refresh($, await $.clock.now())
     }
-    const settings = (show: (name: string, label: string) => RenderElement | false) => (
+    const turn = async (by: number) => {
+      settingsPage = Math.min(Math.max(settingsPage + by, 0), pages - 1)
+      await refresh($, await $.clock.now())
+    }
+    const settings = (show: (name: string, label: string) => RenderElement | false, icon: RenderElement) => (
       <Box flexDirection="column">
         <Box flexDirection="row" columnGap={1}>
+          <Box flexGrow={1} flexShrink={1}>
+            <Text bold wrap="truncate-end">
+              Settings
+            </Text>
+          </Box>
+          {button('settings-done', 'Done', {}, toggleSettings)}
+        </Box>
+        <Box flexDirection="row" columnGap={1} marginTop={1}>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+            <Text bold wrap="truncate-end">
+              Opens by itself
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              In new and reopened sessions
+            </Text>
+          </Box>
+          {button('opens-on', 'On', crew.opensItself !== false ? { variant: 'primary' } : { dimColor: true }, () => setOpensItself(true))}
+          {button('opens-off', 'Off', crew.opensItself === false ? { variant: 'primary' } : { dimColor: true }, () => setOpensItself(false))}
+        </Box>
+        <Box flexDirection="row" columnGap={1} marginTop={1}>
           <Box flexGrow={1} flexShrink={1}>
             <Text bold wrap="truncate-end">
               Animations
             </Text>
           </Box>
-          <Button key="settings-back" plain {...(page === 0 ? { dimColor: true } : {})} onPress={() => void turn(-1)}>
-            ◀
-          </Button>
+          {button('settings-back', '◀', page === 0 ? { plain: true, dimColor: true } : { plain: true }, () => turn(-1))}
           <Text dimColor>{`${page + 1}/${pages}`}</Text>
-          <Button key="settings-next" plain {...(page === pages - 1 ? { dimColor: true } : {})} onPress={() => void turn(1)}>
-            ▶
-          </Button>
-          <Button key="settings-done" onPress={() => void toggleSettings()}>
-            Done
-          </Button>
+          {button('settings-next', '▶', page === pages - 1 ? { plain: true, dimColor: true } : { plain: true }, () => turn(1))}
         </Box>
         <Text dimColor wrap="truncate-end">
           How each mood is drawn, in every session.
@@ -597,14 +662,20 @@ export const register: Register = on => {
               {(VARIANTS[mood] ?? []).map(([name, label]) => (
                 <Box flexDirection="column" width={PICK_CELLS} flexShrink={0}>
                   {show(name, label)}
-                  <Button key={`pick:${name}`} {...(name === current ? { variant: 'primary' as const } : { dimColor: true })} onPress={() => void pick(mood, name)}>
-                    {label}
-                  </Button>
+                  {button(`pick:${name}`, label, name === current ? { variant: 'primary' } : { dimColor: true }, () => pick(mood, name))}
                 </Box>
               ))}
             </Box>
           )
         })}
+        <Box flexDirection="row" columnGap={1} alignItems="center" marginTop={1}>
+          {icon}
+          <Box flexGrow={1} flexShrink={1}>
+            <Text dimColor wrap="truncate-end">
+              Made by <Link href={MAKER_URL}>hudcolighting</Link>
+            </Text>
+          </Box>
+        </Box>
       </Box>
     )
     const rule = isTerminal ? (
@@ -659,7 +730,7 @@ export const register: Register = on => {
         <Box flexDirection="column">
           {top}
           {rule}
-          {crew.isSetting ? settings(() => false) : groups}
+          {crew.isSetting ? settings(() => false, <Raster key="icon" columns={ICON_COLUMNS} rows={ICON_ROWS} cells={iconCells()} />) : groups}
         </Box>
       )
     }
@@ -712,12 +783,18 @@ export const register: Register = on => {
       ) : (
         <Client key={`preview:${name}`} module="./sprite-client.tsx" props={{ mood: name, size: 'helper' }} width={9} height={4} />
       )
+    const icon =
+      crew.style === 'svg' || !Client ? (
+        <Svg source={iconSvg()} alt="Clawd Crew" width={40} height={40} />
+      ) : (
+        <Client key="icon" module="./icon-client.tsx" width={10} height={5} />
+      )
     return (
       <Box flexDirection="column">
         {top}
         {rule}
         {crew.isSetting
-          ? settings(preview)
+          ? settings(preview, icon)
           : crew.groups.map((group, index) => (
               <Box flexDirection="column" marginTop={index === 0 ? 0 : 1}>
                 {row(group.head)}

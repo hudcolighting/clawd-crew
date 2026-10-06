@@ -56,6 +56,14 @@
       el.textContent = [p.label ?? node.children ?? p.children ?? ''].flat().join('')
       return el
     }
+    // A link as the desktop draws one: an anchor, its text the children.
+    if (node.type === 'Link') {
+      const el = document.createElement('a')
+      el.href = p.href
+      el.style.color = 'inherit'
+      for (const child of node.children ?? [p.label ?? p.href]) el.appendChild(draw(child))
+      return el
+    }
     const el = document.createElement(node.type === 'Text' ? 'span' : 'div')
     el.className = node.type === 'Text' ? 'text' : 'box'
     const s = el.style

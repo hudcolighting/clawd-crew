@@ -54,7 +54,7 @@ Every session is a Clawd with three or four lines beside it: its name, what it i
 
 ## The Clawds
 
-Each mood has three animations: its own (Classic) and two more. Pick any of them with the ⚙ at the top right of the pane, three moods a page. A pick shows at once, and in your other sessions within a few seconds.
+Each mood has three animations: its own (Classic) and two more. Pick any of them in the [settings](#commands-and-settings), three moods a page. A pick shows at once, and in your other sessions within a few seconds.
 
 | Mood | Classic | | |
 | --- | :---: | :---: | :---: |
@@ -121,7 +121,7 @@ What reaches the pane is session names, models, and a few words on what each is 
 - `asked.json`: when a session last asked for the limits, and whether the answer had them.
 - `settings.json`: your animation picks.
 
-Three preferences go in Claude Code's own plugin storage: whether you hid the pane, the drawing style, and whether a terminal should open it by itself.
+Three preferences go in Claude Code's own plugin storage: whether the pane opens by itself, the drawing style, and whether you have asked for it in a terminal.
 
 **What it runs**: a few of the system's own programs, for what Claude Code's plugin API doesn't offer: a list of running processes, and reading files past the API's 4 MiB limit (transcripts run much longer).
 
@@ -130,11 +130,16 @@ Three preferences go in Claude Code's own plugin storage: whether you hid the pa
 
 **What it asks the model**: one tiny request, and only when it is needed. When no session has a reading of the usage limits, as on a first start, the session doing the counting sends Haiku a one-line request capped at one output token, and reads the limits from the answer as from any reply. The asking is noted in `asked.json`, and no session asks again within five hours, or within a week if the answer had no limits (as with an API key). It costs a few dozen input tokens, which show in `/cost`. Nothing else is sent to a model.
 
-## Commands
+## Commands and settings
 
 - `/clawds` opens the pane, for example after you closed it or in a narrow terminal.
-- `/clawds hide` closes it and stops it opening by itself.
+- `/clawds hide` closes it and turns "Opens by itself" off.
 - `/clawds style pixels` (the default) or `/clawds style svg` picks how the desktop app draws the Clawds.
+
+The ⚙ at the top right of the pane opens the settings, for every session:
+
+- **Opens by itself**: whether new and reopened sessions open the pane without being asked. Closing the pane closes it in that session only.
+- **Animations**: the animation each mood is drawn with, three moods a page.
 
 In the desktop app, each Clawd is drawn as small boxes of color by a module that runs on the app's side and steps the animation itself, so the pane's once-a-second redraws never restart it. `/clawds style svg` draws animated SVGs instead, which restart each time the pane redraws.
 
@@ -160,7 +165,8 @@ To see every animation in a browser, serve the folder over HTTP (for example `py
 - `hooks/sprite-client.tsx`: the desktop's Clawd, drawn as boxes of color and animated on the app's side.
 - `hooks/svg.js`: the same art as animated SVG, for `/clawds style svg` and the mobile and VS Code surfaces.
 - `hooks/cells.ts`: the terminal's version, in quadrant-block cells.
-- `media/`: the pane picture, and a 512 x 512 GIF of every animation.
+- `hooks/icon.js` and `hooks/icon-client.tsx`: the Clawd Crew icon as pixels, and the desktop's drawing of it under the settings.
+- `media/`: the icon, the pane picture, and a 512 x 512 GIF of every animation.
 
 ## License
 
@@ -169,3 +175,5 @@ Clawd Crew is free software: you can redistribute it and/or modify it under the 
 ## Disclaimer
 
 Clawd Crew is an unofficial fan project. It is not made, endorsed or supported by Anthropic. Claude, Claude Code and Clawd are Anthropic's; the license above covers this project's own code and drawings, and grants no rights in Anthropic's names or characters.
+
+<p align="center"><img src="media/icon.png" width="128" alt="The Clawd Crew icon: Clawd lifting a stage light over his head, its beams fanning out"></p>

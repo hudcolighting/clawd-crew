@@ -688,7 +688,11 @@ const pair = async (
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('agent.list', () => ({ value: [] }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  const opened: string[] = []
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
   on('ui.log', () => ({ value: undefined }))
   on('fs.read', (_$, e) => (files.has(e.path) ? { value: files.get(e.path)! } : { deny: 'ENOENT' }))
   on('fs.write', (_$, e) => {
@@ -714,6 +718,12 @@ const pair = async (
     desk,
     files,
     asked,
+    opened,
+    // A press, as a person makes one: apart from the last.
+    press: async (key: string) => {
+      await clock.advance(400)
+      return desk.press({ key })
+    },
   }
 }
 
@@ -800,7 +810,7 @@ test('a settings button picks the animation each mood is drawn with', { timeoutM
   // The button at the header's top right opens the settings in place of the
   // crew, three moods a page, each with its three animations playing and a
   // button under each: no more playing at once than a crew's worth.
-  await session.desk.press({ key: 'settings' })
+  await session.press('settings')
   let texts = await session.texts()
   const previews = async () => (await session.desk.findAll({ type: 'Client' })).filter(found => String(found.key).startsWith('preview:'))
   expect(texts).toContain('Animations')
@@ -810,24 +820,41 @@ test('a settings button picks the animation each mood is drawn with', { timeoutM
   expect(texts).not.toContain('Weather app')
   expect(await previews()).toHaveLength(9)
   expect(await session.desk.find({ type: 'Client', key: 'preview:idle.coffee' })).toBeDefined()
+  // A credit at the foot of the page, its name a link to the maker's profile.
+  const credit = async () => {
+    const link = await session.desk.find({ type: 'Link' })
+    return { line: (await session.texts()).some(text => text.startsWith('Made by ')), href: link?.props.href, name: link?.children }
+  }
+  expect(await credit()).toEqual({ line: true, href: 'https://github.com/hudcolighting', name: ['hudcolighting'] })
+  // Beside it, the Clawd Crew icon, drawn as each surface draws its Clawds:
+  // boxes on the desktop, an SVG where the sprites are SVGs, cells on a
+  // terminal.
+  expect((await session.desk.find({ type: 'Client', key: 'icon' }))?.props).toMatchObject({ width: 10, height: 5 })
+  await $.command.run({ command: 'clawds', args: 'style svg' })
+  const iconSvg = (await session.desk.findAll({ type: 'Svg' })).find(found => found.props.alt === 'Clawd Crew')
+  expect(String(iconSvg?.props.source)).toContain('fill="#F2C14E"')
+  await $.command.run({ command: 'clawds', args: 'style pixels' })
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await term.find({ type: 'Raster', key: 'icon' }))?.props).toMatchObject({ columns: 14, rows: 13 })
   // The arrows turn the page, and stop at either end.
-  await session.desk.press({ key: 'settings-back' })
+  await session.press('settings-back')
   expect(await session.texts()).toContain('1/6')
-  for (let i = 0; i < 6; i++) await session.desk.press({ key: 'settings-next' })
+  for (let i = 0; i < 6; i++) await session.press('settings-next')
   texts = await session.texts()
   expect(texts).toContain('6/6')
   expect(texts).toContain('Hit an error')
   expect(texts).not.toContain('Idle')
   expect(await previews()).toHaveLength(6)
-  for (let i = 0; i < 5; i++) await session.desk.press({ key: 'settings-back' })
+  expect((await credit()).href).toBe('https://github.com/hudcolighting')
+  for (let i = 0; i < 5; i++) await session.press('settings-back')
   expect(await session.texts()).toContain('1/6')
   expect((await session.desk.find({ type: 'Button', key: 'pick:idle' }))?.props.variant).toBe('primary')
   // A pick: kept for every session, and drawn at once.
-  await session.desk.press({ key: 'pick:idle.coffee' })
+  await session.press('pick:idle.coffee')
   expect(JSON.parse(session.files.get(SETTINGS) ?? '{}')).toEqual({ v: 1, animations: { idle: 'idle.coffee' } })
   expect((await session.desk.find({ type: 'Button', key: 'pick:idle.coffee' }))?.props.variant).toBe('primary')
   expect((await session.desk.find({ type: 'Button', key: 'pick:idle' }))?.props.variant).toBeUndefined()
-  await session.desk.press({ key: 'settings-done' })
+  await session.press('settings-done')
   texts = await session.texts()
   expect(texts).toContain('Weather app')
   expect(await own()).toMatchObject({ mood: 'idle.coffee' })
@@ -837,12 +864,100 @@ test('a settings button picks the animation each mood is drawn with', { timeoutM
   for (let i = 0; i < 5; i++) await session.clock.advance(1_000)
   expect(await own()).toMatchObject({ mood: 'idle.tune' })
   // Picking a mood's own animation again takes its pick away.
-  await session.desk.press({ key: 'settings' })
+  await session.press('settings')
   expect((await session.desk.find({ type: 'Button', key: 'pick:thinking' }))?.props.variant).toBe('primary')
-  await session.desk.press({ key: 'pick:idle' })
+  await session.press('pick:idle')
   expect(JSON.parse(session.files.get(SETTINGS) ?? '{}')).toEqual({ v: 1, animations: { thinking: 'idle.coffee' } })
-  await session.desk.press({ key: 'settings' })
+  await session.press('settings')
   expect(await own()).toMatchObject({ mood: 'idle' })
+})
+
+test('the first click into the pane lands', { timeoutMs: 30_000 }, async ($, on) => {
+  // Clicking into the pane gives it the focus, which draws it again while
+  // the mouse button is down, and the desktop sends the click to the drawing
+  // still on screen. So a Button keeps its press handle from drawing to
+  // drawing, through a focus change and through what it shows ticking on.
+  const session = await pair($, on, { status: 'busy', statusUpdatedAt: NOW - 5_000 })
+  const handles = async () => {
+    const found: Record<string, number> = {}
+    const walk = (node: unknown) => {
+      if (node === null || typeof node !== 'object') return
+      const element = node as { type?: string; props?: { key?: string }; press?: { handle: number }; children?: unknown[] }
+      if (element.type === 'Button' && element.props?.key && element.press) found[element.props.key] = element.press.handle
+      for (const child of element.children ?? []) walk(child)
+    }
+    walk(await session.desk.drawn())
+    return found
+  }
+  const before = await handles()
+  const drawnBefore = JSON.stringify(await session.desk.drawn())
+  expect(Object.keys(before)).toEqual(['settings'])
+  await session.desk.redraw({ ...PANE.props, isFocused: true })
+  for (let i = 0; i < 3; i++) await session.clock.advance(1_000)
+  expect(JSON.stringify(await session.desk.drawn())).not.toBe(drawnBefore)
+  expect(await handles()).toEqual(before)
+  // The settings' own buttons too.
+  await session.press('settings')
+  const open = await handles()
+  expect(Object.keys(open)).toContain('pick:idle.coffee')
+  await session.desk.redraw({ ...PANE.props, isFocused: false })
+  for (let i = 0; i < 3; i++) await session.clock.advance(1_000)
+  expect(await handles()).toEqual(open)
+})
+
+test('a setting decides whether the pane opens by itself', { timeoutMs: 30_000 }, async ($, on) => {
+  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
+  on('ui.close', () => undefined)
+  on('command.run', () => ({ text: '' }))
+  const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 })
+  const reopened = async () => {
+    const before = session.opened.length
+    await $.session.attach({ surface: 'desktop', clientId: `desktop:${before}` })
+    // The pane opens after the attach settles, not within it.
+    await session.clock.advance(10)
+    return session.opened.length > before
+  }
+  const setting = async () =>
+    [await session.desk.find({ type: 'Button', key: 'opens-on' }), await session.desk.find({ type: 'Button', key: 'opens-off' })].map(found => found?.props.variant)
+  // On at first: the session opened it as it started, and a client
+  // attaching, as a reopened session's does, opens it again.
+  expect(session.opened).toEqual(['clawd-crew'])
+  expect(await reopened()).toBe(true)
+  await session.press('settings')
+  expect(await session.texts()).toContain('Opens by itself')
+  expect(await setting()).toEqual(['primary', undefined])
+  // Off: kept for every session, and nothing opens it unasked.
+  await session.press('opens-off')
+  expect(await setting()).toEqual([undefined, 'primary'])
+  expect(await reopened()).toBe(false)
+  // Opening it with /clawds leaves the setting as it is.
+  await $.command.run({ command: 'clawds', args: '' })
+  expect(await setting()).toEqual([undefined, 'primary'])
+  expect(await reopened()).toBe(false)
+  // On again.
+  await session.press('opens-on')
+  expect(await setting()).toEqual(['primary', undefined])
+  expect(await reopened()).toBe(true)
+  // /clawds hide turns it off, as it says.
+  await $.command.run({ command: 'clawds', args: 'hide' })
+  expect(await reopened()).toBe(false)
+})
+
+test('clicks in quick succession are one press', { timeoutMs: 30_000 }, async ($, on) => {
+  const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 })
+  const isOpen = async () => (await session.texts()).includes('Animations')
+  // A double click on the gear opens the settings, rather than opening and
+  // shutting them at once.
+  await session.desk.press({ key: 'settings' })
+  await session.desk.press({ key: 'settings' })
+  expect(await isOpen()).toBe(true)
+  // Anything within 300 ms of it is the same press; from then on, a new one.
+  await session.clock.advance(299)
+  await session.desk.press({ key: 'settings-done' })
+  expect(await isOpen()).toBe(true)
+  await session.clock.advance(1)
+  await session.desk.press({ key: 'settings-done' })
+  expect(await isOpen()).toBe(false)
 })
 
 test('a pick kept from before is drawn from the start', { timeoutMs: 30_000 }, async ($, on) => {
