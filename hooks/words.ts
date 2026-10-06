@@ -145,7 +145,7 @@ export const modelName = (id: string | undefined) => {
   return /\[1m\]$/i.test(id) ? `${name} (1M)` : name
 }
 
-export const tokenCount = (n: number | undefined) => {
+export const shortCount = (n: number | undefined) => {
   if (n === undefined || !Number.isFinite(n)) return ''
   if (n >= 1e9) return `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)}B`
   if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`

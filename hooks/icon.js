@@ -1,4 +1,4 @@
-// The Clawd Crew icon (media/icon.png): Clawd lifting the stage light over
+// The Clawd Crew icon: Clawd lifting the stage light over
 // his head, its beams fanning out, on a 32 x 32 grid in the sprites' colors.
 // One letter a pixel; '.' is the tile.
 

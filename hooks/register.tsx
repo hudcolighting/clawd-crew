@@ -168,11 +168,11 @@ const MAKER_URL = 'https://github.com/hudcolighting'
 
 // Builds the view and draws it again if anything it shows has changed.
 const refresh = async ($: EngineInterface, now: number) => {
-  const next: CrewView = { ...buildView(now, style), animations: picks, isSetting, settingsPage, opensItself }
-  const text = JSON.stringify(next)
+  const fresh: CrewView = { ...buildView(now, style), animations: picks, isSetting, settingsPage, opensItself }
+  const text = JSON.stringify(fresh)
   if (text === shown) return
   shown = text
-  await update($, view, () => next)
+  await update($, view, () => fresh)
 }
 
 // With no session holding the usage limits, as on a first start, the
@@ -735,31 +735,38 @@ export const register: Register = on => {
       )
     }
 
-    const table = $.ui.resolve(e)
-    const { Svg } = table
-    // Mobile and VS Code draw no surface modules: they get the SVG sprites.
-    const Client = 'Client' in table ? table.Client : undefined
-    const sprite = (member: CrewMember) => {
-      if (crew.style === 'svg' || !Client) {
-        return <Svg source={spriteOf(animOf(member.mood), member.tip)} alt={member.name} width={member.isAgent ? 48 : 72} height={member.isAgent ? 40 : 60} isInteractive />
+    const { Svg } = $.ui.resolve(e)
+    // The desktop draws each Clawd as a surface module, which outlives the
+    // pane's redraws. Mobile and VS Code draw no surface modules, so they get
+    // the SVG sprites, as every surface does in the `svg` style. Each module
+    // is named as a fixed path where it is drawn.
+    const modules = (() => {
+      if (e.surface !== 'desktop' || crew.style === 'svg') return undefined
+      const { Client } = $.ui.resolve(e)
+      return {
+        sprite: (member: CrewMember) => (
+          <Client
+            key={`sprite:${member.key}`}
+            module="./sprite-client.tsx"
+            props={{ mood: animOf(member.mood), size: member.isAgent ? 'helper' : 'session' }}
+            width={member.isAgent ? 9 : 12}
+            height={member.isAgent ? 4 : 5}
+          />
+        ),
+        chip: (chip: CrewChip) => (
+          <Client key={`sprite:${chip.key}`} module="./sprite-client.tsx" props={{ mood: animOf(chip.mood), size: 'tiny' }} width={6} height={3} />
+        ),
+        preview: (name: string) => <Client key={`preview:${name}`} module="./sprite-client.tsx" props={{ mood: name, size: 'helper' }} width={9} height={4} />,
+        icon: <Client key="icon" module="./icon-client.tsx" width={10} height={5} />,
       }
-      return (
-        <Client
-          key={`sprite:${member.key}`}
-          module="./sprite-client.tsx"
-          props={{ mood: animOf(member.mood), size: member.isAgent ? 'helper' : 'session' }}
-          width={member.isAgent ? 9 : 12}
-          height={member.isAgent ? 4 : 5}
-        />
+    })()
+    const sprite = (member: CrewMember) =>
+      modules?.sprite(member) ?? (
+        <Svg source={spriteOf(animOf(member.mood), member.tip)} alt={member.name} width={member.isAgent ? 48 : 72} height={member.isAgent ? 40 : 60} isInteractive />
       )
-    }
     // A crowd's helper: a tiny Clawd of its own.
     const chipSprite = (chip: CrewChip) =>
-      crew.style === 'svg' || !Client ? (
-        <Svg source={spriteOf(animOf(chip.mood), chip.name)} alt={chip.name} width={30} height={25} isInteractive />
-      ) : (
-        <Client key={`sprite:${chip.key}`} module="./sprite-client.tsx" props={{ mood: animOf(chip.mood), size: 'tiny' }} width={6} height={3} />
-      )
+      modules?.chip(chip) ?? <Svg source={spriteOf(animOf(chip.mood), chip.name)} alt={chip.name} width={30} height={25} isInteractive />
     const row = (member: CrewMember) => (
       <Box flexDirection="row">
         {sprite(member)}
@@ -778,17 +785,8 @@ export const register: Register = on => {
     )
     // An animation in the settings, playing.
     const preview = (name: string, label: string) =>
-      crew.style === 'svg' || !Client ? (
-        <Svg source={spriteOf(name, label)} alt={label} width={48} height={40} isInteractive />
-      ) : (
-        <Client key={`preview:${name}`} module="./sprite-client.tsx" props={{ mood: name, size: 'helper' }} width={9} height={4} />
-      )
-    const icon =
-      crew.style === 'svg' || !Client ? (
-        <Svg source={iconSvg()} alt="Clawd Crew" width={40} height={40} />
-      ) : (
-        <Client key="icon" module="./icon-client.tsx" width={10} height={5} />
-      )
+      modules?.preview(name) ?? <Svg source={spriteOf(name, label)} alt={label} width={48} height={40} isInteractive />
+    const icon = modules?.icon ?? <Svg source={iconSvg()} alt="Clawd Crew" width={40} height={40} />
     return (
       <Box flexDirection="column">
         {top}

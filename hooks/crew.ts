@@ -8,7 +8,7 @@ import type { AgentInfo, SessionRateLimit, TurnStepChunk, TurnUsage } from 'clau
 
 import type { CrewChip, CrewCrowd, CrewGroup, CrewHeader, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
 import { type Totals, isTotalReady, isUsageReady, setUsagePaths, usageSince, usageTotal } from './usage'
-import { type Doing, type Mood, briefly, clip, describeTool, doingLine, elapsed, isWorkMood, modelName, money, roughly, tokenCount } from './words'
+import { type Doing, type Mood, briefly, clip, describeTool, doingLine, elapsed, isWorkMood, modelName, money, roughly, shortCount } from './words'
 
 // The file system and processes, as the hooks module reaches them for us:
 // only it may hold the engine interface.
@@ -1278,8 +1278,8 @@ const timeLine = (mood: Mood, since: number | undefined, now: number) => {
 
 const usageLine = (context: number | undefined, percent: number | undefined, output: number | undefined, cost: number | undefined) =>
   [
-    context !== undefined ? `${tokenCount(context)} ctx${percent !== undefined ? ` (${Math.round(percent)}%)` : ''}` : '',
-    output ? `${tokenCount(output)} out` : '',
+    context !== undefined ? `${shortCount(context)} ctx${percent !== undefined ? ` (${Math.round(percent)}%)` : ''}` : '',
+    output ? `${shortCount(output)} out` : '',
     cost ? money(cost) : '',
   ]
     .filter(Boolean)
@@ -1463,7 +1463,7 @@ const orderOf = (kind: string) => {
 
 const totalsLine = ({ tokensIn, tokensOut, usd }: Totals, isReady: boolean) =>
   isReady
-    ? [tokensIn ? `${tokenCount(tokensIn)} in` : '', tokensOut ? `${tokenCount(tokensOut)} out` : '', usd ? money(usd) : '']
+    ? [tokensIn ? `${shortCount(tokensIn)} in` : '', tokensOut ? `${shortCount(tokensOut)} out` : '', usd ? money(usd) : '']
         .filter(Boolean)
         .join(' · ') || 'nothing yet'
     : 'counting…'
@@ -1532,7 +1532,7 @@ const phaseView = (row: Row, group: PhaseGroup, now: number): CrewPhase => {
       done ? `${done} done` : '',
       failed ? plural(failed, 'error') : '',
       elapsed(time),
-      tokens ? `${tokenCount(tokens)} tok` : '',
+      tokens ? `${shortCount(tokens)} tok` : '',
     ]
       .filter(Boolean)
       .join(' · '),
@@ -1548,7 +1548,7 @@ const phaseView = (row: Row, group: PhaseGroup, now: number): CrewPhase => {
             mood: spriteMood(key, helper.mood, now),
             name: helperName(helper),
             doing: doingLine({ mood: helper.mood, detail: helper.detail }),
-            fact: [briefly(worked), helper.tokens ? `${tokenCount(helper.tokens)} tok` : ''].filter(Boolean).join(' · '),
+            fact: [briefly(worked), helper.tokens ? `${shortCount(helper.tokens)} tok` : ''].filter(Boolean).join(' · '),
             tone: toneOf(helper.mood),
           }
         }),

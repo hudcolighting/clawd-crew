@@ -123,12 +123,18 @@ What reaches the pane is session names, models, and a few words on what each is 
 
 Three preferences go in Claude Code's own plugin storage: whether the pane opens by itself, the drawing style, and whether you have asked for it in a terminal.
 
-**What it runs**: a few of the system's own programs, for what Claude Code's plugin API doesn't offer: a list of running processes, and reading files past the API's 4 MiB limit (transcripts run much longer).
+**What it runs**: a few of the system's own programs, for what Claude Code's plugin API doesn't offer: a list of running processes, and reading files past the API's 4 MiB limit (transcripts run much longer). These are the only commands it runs:
 
-- On Windows: `tasklist`, to see which sessions are still running, and `powershell.exe`, to read the end of other sessions' transcripts and to count the totals. The counting script is long, so it is passed with `-EncodedCommand`, PowerShell's way of taking a script as base64 text. Malware uses the same switch to hide what it runs, so here is where to read it in plain text: `SCAN_PS` in `hooks/usage.ts`.
-- On macOS and Linux: `ps`, `sh` with `tail` and `base64`, and `python3` (`SCAN_PY` in the same file).
+- On Windows: `tasklist /FO CSV /NH`, to see which sessions are still running; `powershell.exe -NoProfile -NonInteractive -Command <script>`, whose script (`readTails` in `hooks/crew.ts`) reads the end of other sessions' transcripts; and `powershell.exe -NoProfile -NonInteractive -EncodedCommand <script>`, which counts the totals. The counting script is long, so it is passed as base64 text, PowerShell's way of taking a script whole. Malware uses the same switch to hide what it runs, so here is where to read it in plain text: `SCAN_PS` in `hooks/usage.ts`.
+- On macOS and Linux: `ps -A -o pid=`; `sh -c` running `tail` and `base64` over the transcripts' paths; and `python3 -c <script>` (`SCAN_PY` in `hooks/usage.ts`).
+
+Each is handed file paths and reads the files itself, and what it prints comes back to the mod and goes nowhere else. No conversation text is handed to any of them.
 
 **What it asks the model**: one tiny request, and only when it is needed. When no session has a reading of the usage limits, as on a first start, the session doing the counting sends Haiku a one-line request capped at one output token, and reads the limits from the answer as from any reply. The asking is noted in `asked.json`, and no session asks again within five hours, or within a week if the answer had no limits (as with an API key). It costs a few dozen input tokens, which show in `/cost`. Nothing else is sent to a model.
+
+**What it hooks**: Claude Code's events about each session (its start, attach and end; each turn and its steps; tool calls; subagents starting; compaction; usage), only to see what the session is doing. Every one of those hooks passes its event on unchanged and returns what Claude Code answers, so it changes no tool call, permission, agent or prompt. It answers just two things itself, both its own: the `/clawds` command, and the drawing of its own pane.
+
+**What it never does**: call a tool, start an agent, run a slash command, fetch anything from the network on its own, or write a build, start-up, settings or instructions file of any program. Its `settings.json` holds only its animation picks, in its own folder. It reads no credential: where the code says "token", it means the token counts of model calls. The engine tests in `tests/` stand in for Claude Code to check the mod, so they call tools, start agents and answer process calls themselves; Claude Code never loads them.
 
 ## Commands and settings
 

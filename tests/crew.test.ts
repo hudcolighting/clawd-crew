@@ -960,6 +960,19 @@ test('clicks in quick succession are one press', { timeoutMs: 30_000 }, async ($
   expect(await isOpen()).toBe(false)
 })
 
+test('surfaces without modules draw the Clawds as SVGs', { timeoutMs: 30_000 }, async ($, on) => {
+  // The desktop draws each Clawd as a surface module; the phone and the
+  // editor draw no modules, so they get the SVG sprites, the icon too.
+  const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 })
+  expect(await session.desk.find({ type: 'Client', key: `sprite:${SELF}` })).toBeDefined()
+  for (const surface of ['mobile', 'vscode'] as const) {
+    const pane = await $.ui.mount({ ...PANE, surface })
+    expect(await pane.findAll({ type: 'Client' })).toEqual([])
+    expect((await pane.findAll({ type: 'Svg' })).map(found => found.props.alt)).toContain('Weather app')
+    await pane.unmount()
+  }
+})
+
 test('a pick kept from before is drawn from the start', { timeoutMs: 30_000 }, async ($, on) => {
   const seed = { [SETTINGS]: JSON.stringify({ v: 1, animations: { idle: 'idle.tune' } }) }
   const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 }, { seed, ticks: 1 })
