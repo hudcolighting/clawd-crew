@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clawd Crew Boxes</title>
+<style>
+  /* Roughly the desktop pane: a code font, rows one line tall, cells of 1ch x 1lh. */
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #262624; color: #eeeae2; font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  h1 { font: bold 14px system-ui, sans-serif; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+  .card { display: flex; gap: 1ch; align-items: flex-start; }
+  .name { font-size: 12px; opacity: .8; }
+  .sprite, .band, .run { box-sizing: border-box; }
+  .sprite { display: flex; flex-direction: column; }
+  .band { display: flex; flex-direction: row; }
+</style>
+</head>
+<body>
+<h1>Clawd Crew sprites drawn as boxes (as the desktop's surface module draws them)</h1>
+<div class="grid" id="grid"></div>
+<script type="module">
+  import { ANIMATIONS, FLOOR, GROUND, H, PALETTE, TILE, W, framesOf } from '../hooks/sprites.js'
+
+  const params = new URLSearchParams(location.search)
+  const pixel = params.get('size') === 'helper' ? { w: 0.375, h: 0.1875 } : { w: 0.5, h: 0.25 }
+  const ROWS = H - 1
+
+  const colorAt = (grid, x, y) => {
+    const index = grid[y * W + x]
+    if (index) return PALETTE[index]
+    return y === GROUND && x >= 4 && x < W - 4 ? FLOOR : null
+  }
+
+  // The same bands the surface module builds: runs along a row, equal rows merged.
+  const bandsOf = grid => {
+    const bands = []
+    for (let y = 0; y < ROWS; y++) {
+      const runs = []
+      let x = 0
+      while (x < W) {
+        const color = colorAt(grid, x, y)
+        let n = 1
+        while (x + n < W && colorAt(grid, x + n, y) === color) n += 1
+        runs.push([color, n])
+        x += n
+      }
+      const sig = JSON.stringify(runs)
+      const last = bands[bands.length - 1]
+      if (last && last.sig === sig) last.rows += 1
+      else bands.push({ rows: 1, runs, sig })
+    }
+    return bands
+  }
+
+  const ch = n => `calc(${n} * 1ch)`
+  const lh = n => `calc(${n} * 1lh)`
+
+  const draw = (host, bands) => {
+    host.replaceChildren()
+    for (const band of bands) {
+      const row = document.createElement('div')
+      row.className = 'band'
+      row.style.height = lh(band.rows * pixel.h)
+      for (const [color, n] of band.runs) {
+        const run = document.createElement('div')
+        run.className = 'run'
+        run.style.width = ch(n * pixel.w)
+        run.style.height = lh(band.rows * pixel.h)
+        if (color) run.style.background = color
+        row.appendChild(run)
+      }
+      host.appendChild(row)
+    }
+  }
+
+  const grid = document.getElementById('grid')
+  const players = []
+  for (const name of ANIMATIONS) {
+    const { ms, frames } = framesOf(name)
+    const card = document.createElement('div')
+    card.className = 'card'
+    const sprite = document.createElement('div')
+    sprite.className = 'sprite'
+    sprite.style.width = ch(W * pixel.w)
+    sprite.style.height = lh(ROWS * pixel.h)
+    sprite.style.background = TILE
+    const label = document.createElement('div')
+    label.className = 'name'
+    label.textContent = name
+    card.append(sprite, label)
+    grid.appendChild(card)
+    const bands = frames.map(bandsOf)
+    draw(sprite, bands[0])
+    players.push({ sprite, bands, ms, t: 0, frame: 0 })
+  }
+  setInterval(() => {
+    for (const p of players) {
+      p.t += 100
+      const frame = Math.floor(p.t / p.ms) % p.bands.length
+      if (frame !== p.frame) {
+        p.frame = frame
+        draw(p.sprite, p.bands[frame])
+      }
+    }
+  }, 100)
+</script>
+</body>
+</html>

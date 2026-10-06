@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clawd Crew Gallery</title>
+<style>
+  :root { --bg: #1f1e1d; --fg: #eeeae2; --dim: #a8a39a; --card: #2b2a28; --line: #3a3835; color-scheme: dark; }
+  :root[data-theme="light"] { --bg: #f5f4ef; --fg: #1f1e1d; --dim: #6b675f; --card: #ffffff; --line: #e3e0d8; color-scheme: light; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 13px/1.45 ui-monospace, Consolas, monospace; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 13px; margin: 20px 0 8px; color: var(--dim); font-weight: normal; text-transform: uppercase; letter-spacing: .08em; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0 4px; align-items: center; color: var(--dim); }
+  .bar a { color: var(--fg); }
+  button { font: inherit; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .top { display: flex; gap: 12px; align-items: flex-start; }
+  .card img { width: 144px; height: 120px; display: block; flex: none; }
+  .name { font-weight: bold; font-size: 14px; }
+  .when { margin: 2px 0 6px; }
+  .meta { color: var(--dim); font-size: 12px; }
+  .strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .frame { display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--dim); font-size: 11px; }
+  .frame canvas { image-rendering: pixelated; border: 1px solid var(--line); background: #1b1a19; }
+</style>
+</head>
+<body>
+<h1>Clawd Crew animations</h1>
+<div class="bar">
+  <span>Each card loops its animation; the numbered frames under it are the same animation one step at a time.</span>
+  <button id="theme">Light page</button>
+  <a href="boxes.html">As the desktop draws them (boxes)</a>
+</div>
+<div id="groups"></div>
+<script type="module">
+  import { ANIMATIONS, PALETTE, VARIANTS, W, H, framesOf } from '../hooks/sprites.js'
+  import { clawdSvg } from '../hooks/svg.js'
+
+  const WHEN = {
+    idle: 'Waiting for a prompt',
+    sleeping: 'Idle for more than 10 minutes',
+    thinking: 'Thinking, and while a request is starting',
+    responding: 'Writing a reply',
+    typing: 'Editing or writing a file (Edit, Write, NotebookEdit)',
+    reading: 'Reading a file (Read)',
+    searching: 'Searching (Grep, Glob, ToolSearch)',
+    running: 'Running a command (Bash, PowerShell, background jobs)',
+    browsing: 'On the web (WebFetch, WebSearch, browser tools)',
+    delegating: 'Starting or waiting on subagents',
+    rallying: 'Running a workflow, its agents at work',
+    planning: 'Planning (todo and task lists, plan mode)',
+    tooling: 'Any other tool (connectors, skills)',
+    waiting: 'Needs you: a permission prompt, a question, a plan to approve',
+    done: 'Just finished a turn (shows for 6 seconds)',
+    error: 'The turn ended on an error',
+    compacting: 'Compacting the conversation',
+  }
+
+  const GROUPS = [
+    ['Resting', ['idle', 'sleeping']],
+    ['The model at work', ['thinking', 'responding', 'compacting']],
+    ['Tools', ['typing', 'reading', 'searching', 'running', 'browsing', 'delegating', 'rallying', 'planning', 'tooling']],
+    ['Calling for you', ['waiting', 'done', 'error']],
+  ]
+
+  const theme = document.getElementById('theme')
+  theme.onclick = () => {
+    const root = document.documentElement
+    const isLight = root.dataset.theme === 'light'
+    root.dataset.theme = isLight ? 'dark' : 'light'
+    theme.textContent = isLight ? 'Light page' : 'Dark page'
+  }
+
+  const params = new URLSearchParams(location.search)
+  const only = params.get('only')?.split(',')
+  const scale = Number(params.get('s') ?? 3)
+  // Each mood followed by the animations the settings offer in its place.
+  const withVariants = names => names.flatMap(name => (VARIANTS[name] ?? [[name]]).map(([variant]) => variant))
+  const labelOf = new Map(Object.values(VARIANTS).flat().map(([name, label]) => [name, label]))
+  const listed = new Set(GROUPS.flatMap(([, names]) => withVariants(names)))
+  const extra = ANIMATIONS.filter(name => !listed.has(name))
+  if (extra.length) GROUPS.push(['Other', extra])
+
+  const host = document.getElementById('groups')
+  for (const [title, names] of GROUPS) {
+    const shown = withVariants(names).filter(name => ANIMATIONS.includes(name) && (!only || only.includes(name)))
+    if (shown.length === 0) continue
+    const heading = document.createElement('h2')
+    heading.textContent = title
+    const grid = document.createElement('div')
+    grid.className = 'grid'
+    host.append(heading, grid)
+    for (const name of shown) {
+      const { frames, ms } = framesOf(name)
+      const card = document.createElement('div')
+      card.className = 'card'
+      const top = document.createElement('div')
+      top.className = 'top'
+      const img = document.createElement('img')
+      img.alt = name
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(clawdSvg(name, { title: name }))
+      const text = document.createElement('div')
+      const mood = name.split('.')[0]
+      const title = name === mood ? name : `${mood} · ${labelOf.get(name) ?? name}`
+      text.innerHTML = `<div class="name">${title}</div><div class="when">${WHEN[mood] ?? ''}</div>` +
+        `<div class="meta">${frames.length} frames, ${ms} ms each (${((frames.length * ms) / 1000).toFixed(1)} s loop)</div>`
+      top.append(img, text)
+      const strip = document.createElement('div')
+      strip.className = 'strip'
+      frames.forEach((grid, index) => {
+        const cell = document.createElement('div')
+        cell.className = 'frame'
+        const canvas = document.createElement('canvas')
+        canvas.width = W
+        canvas.height = H
+        canvas.style.width = `${W * scale}px`
+        canvas.style.height = `${H * scale}px`
+        const ctx = canvas.getContext('2d')
+        grid.forEach((value, i) => {
+          if (!value) return
+          ctx.fillStyle = PALETTE[value]
+          ctx.fillRect(i % W, Math.floor(i / W), 1, 1)
+        })
+        const label = document.createElement('span')
+        label.textContent = String(index + 1)
+        cell.append(canvas, label)
+        strip.appendChild(cell)
+      })
+      card.append(top, strip)
+      grid.appendChild(card)
+    }
+  }
+</script>
+</body>
+</html>

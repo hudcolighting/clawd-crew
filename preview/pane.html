@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clawd Crew Pane</title>
+<style>
+  /* Roughly the desktop's dock pane: a code font, cells of 1ch x 1lh. */
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; background: #1f1e1d; color: #eeeae2; font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  p { font: 12px/1.4 system-ui, sans-serif; color: #a8a39a; max-width: 52ch; margin: 0 0 10px; }
+  .pane { width: 56ch; padding: 8px 10px; background: #262624; border: 1px solid #3a3835; border-radius: 8px; overflow: hidden; }
+  .box { display: flex; flex-direction: row; min-width: 0; box-sizing: border-box; flex-shrink: 1; }
+  .text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; line-height: 1lh; }
+  .sprite { flex: none; overflow: hidden; }
+  .sprite svg { display: block; width: 100%; height: 100%; }
+  .button { display: inline-block; height: 1lh; line-height: 1lh; padding: 0 .5ch; border: 1px solid #55524c; border-radius: 4px; box-sizing: border-box; white-space: nowrap; width: fit-content; font-size: 12px; }
+  .button.primary { background: #D97757; color: #1b1a19; border-color: #D97757; }
+  .button.plain { border: 0; padding: 0; }
+</style>
+</head>
+<body>
+<p>A sample pane as the mod's own code draws it, shown with the desktop's cell sizes; its sessions and figures are made up. "Theme refresh" is running a workflow of 12 agents beside one Explore subagent: the subagent gets a row, the workflow its view by phase. Its Plan and Research phases are over, so their agents are put away and their lines stay, together; a little space sets off each phase still showing its agents. A line too long for its column, like verify:contrast's web search, is cut short.</p>
+<div class="pane" id="pane"></div>
+<script type="module">
+  import { H, W } from '../hooks/sprites.js'
+  import { clawdSvg } from '../hooks/svg.js'
+
+  const ch = n => `calc(${n} * 1ch)`
+  const lh = n => `calc(${n} * 1lh)`
+  const PIXEL = { session: { w: 0.5, h: 0.25 }, helper: { w: 0.375, h: 0.1875 }, tiny: { w: 0.25, h: 0.125 } }
+  const sample = new URLSearchParams(location.search).get('sample') ?? 'pane-sample.json'
+  const tree = await (await fetch(sample, { cache: 'no-store' })).json()
+
+  // A Client takes the box its props give it, as on the desktop.
+  const sprite = ({ mood, size }, width, height) => {
+    const pixel = PIXEL[size] ?? PIXEL.session
+    const host = document.createElement('div')
+    host.className = 'sprite'
+    host.style.width = ch(width ?? W * pixel.w)
+    host.style.height = lh(height ?? H * pixel.h)
+    host.innerHTML = clawdSvg(mood, { title: mood })
+    return host
+  }
+
+  const draw = node => {
+    if (typeof node === 'string' || typeof node === 'number') return document.createTextNode(String(node))
+    if (!node || typeof node !== 'object') return document.createTextNode('')
+    const p = node.props ?? {}
+    if (node.type === 'Client') return sprite(p.props, p.width, p.height)
+    // A button as the desktop draws one: a small native button, or bare.
+    if (node.type === 'Button') {
+      const el = document.createElement('span')
+      el.className = p.plain ? 'button plain' : p.variant === 'primary' ? 'button primary' : 'button'
+      if (p.dimColor) el.style.opacity = '0.6'
+      el.textContent = [p.label ?? node.children ?? p.children ?? ''].flat().join('')
+      return el
+    }
+    const el = document.createElement(node.type === 'Text' ? 'span' : 'div')
+    el.className = node.type === 'Text' ? 'text' : 'box'
+    const s = el.style
+    if (node.type === 'Box') {
+      if (p.flexDirection) s.flexDirection = p.flexDirection
+      if (p.flexWrap) s.flexWrap = p.flexWrap
+      if (p.width !== undefined) s.width = typeof p.width === 'number' ? ch(p.width) : p.width
+      if (p.height !== undefined) s.height = typeof p.height === 'number' ? lh(p.height) : p.height
+      if (p.width !== undefined || p.height !== undefined) s.flexShrink = '0'
+      if (p.flexShrink !== undefined) s.flexShrink = p.flexShrink
+      if (p.flexGrow !== undefined) s.flexGrow = p.flexGrow
+      if (p.alignItems) s.alignItems = p.alignItems
+      if (p.justifyContent) s.justifyContent = p.justifyContent
+      if (p.columnGap !== undefined) s.columnGap = ch(p.columnGap)
+      if (p.marginTop !== undefined) s.marginTop = lh(p.marginTop)
+      if (p.marginLeft !== undefined) s.marginLeft = ch(p.marginLeft)
+      if (p.backgroundColor) s.background = p.backgroundColor
+      if (p.overflow) s.overflow = p.overflow
+      if (p.position) s.position = p.position
+      for (const side of ['top', 'bottom']) if (p[side] !== undefined) s[side] = lh(p[side])
+      for (const side of ['left', 'right']) if (p[side] !== undefined) s[side] = ch(p[side])
+    } else {
+      if (p.color) s.color = p.color
+      if (p.bold) s.fontWeight = 'bold'
+      if (p.dimColor) s.opacity = '0.6'
+    }
+    for (const child of [node.children ?? p.children ?? []].flat()) if (child !== false && child !== null) el.appendChild(draw(child))
+    return el
+  }
+
+  document.getElementById('pane').appendChild(draw(tree))
+</script>
+</body>
+</html>

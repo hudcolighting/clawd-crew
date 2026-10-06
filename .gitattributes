@@ -1,0 +1,4 @@
+# Text is LF everywhere; the pictures are binary.
+* text=auto eol=lf
+*.gif binary
+*.png binary
