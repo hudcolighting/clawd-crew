@@ -4,7 +4,7 @@
 // under a header of the account's usage limits and the crew's totals.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
 
 import type { CrewChip, CrewCrowd, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
 import { COLUMNS, ICON_COLUMNS, ICON_ROWS, ROWS, cellsOf, iconCells } from './cells'
@@ -384,6 +384,10 @@ export const register: Register = on => {
     const crew = await read($, view)
     const isTerminal = e.surface === 'terminal'
     const { Box, Text, Button, Link } = $.ui.resolve(e)
+    // The desktop's surface modules, taken here as the other elements are:
+    // each Client below names its module as a fixed path. Mobile and VS Code
+    // have no Client, and nothing draws one there.
+    const { Client } = $.ui.resolve(e) as Elements['desktop']
 
     // One press, however many clicks arrive together.
     const pressOnce = async (act: () => Promise<void>) => {
@@ -738,11 +742,9 @@ export const register: Register = on => {
     const { Svg } = $.ui.resolve(e)
     // The desktop draws each Clawd as a surface module, which outlives the
     // pane's redraws. Mobile and VS Code draw no surface modules, so they get
-    // the SVG sprites, as every surface does in the `svg` style. Each module
-    // is named as a fixed path where it is drawn.
+    // the SVG sprites, as every surface does in the `svg` style.
     const modules = (() => {
       if (e.surface !== 'desktop' || crew.style === 'svg') return undefined
-      const { Client } = $.ui.resolve(e)
       return {
         sprite: (member: CrewMember) => (
           <Client

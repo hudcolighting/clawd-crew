@@ -1,6 +1,6 @@
 {
   "name": "clawd-crew",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Every running Claude Code session and subagent as a little animated Clawd, with its model, time working and token usage",
   "author": {
     "name": "Hudson",
