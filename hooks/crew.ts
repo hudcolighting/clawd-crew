@@ -129,6 +129,8 @@ type Helper = {
   // Named by a spawn, the engine's list or its meta file: a helper, not one
   // of the engine's own loops (compaction, memory).
   isNamed?: boolean
+  // Its meta file read: named, and placed in its phase if it has one.
+  isMetaRead?: boolean
 }
 
 const THINKING: Doing = { mood: 'thinking', detail: '' }
@@ -150,8 +152,10 @@ export const me = {
   context: undefined as number | undefined,
   contextPercent: undefined as number | undefined,
   costUsd: undefined as number | undefined,
-  // The account's usage-limit windows, as the engine last read them.
+  // The account's usage-limit windows, as the engine last read them, and
+  // when a model call of this session last came back.
   limits: [] as Limit[],
+  calledAt: 0,
   // The phases of its workflows, by `<run>:<title>`.
   phases: new Map<string, Phase>(),
   restoredBusySince: undefined as number | undefined,
@@ -175,6 +179,15 @@ const helperOf = (agentId: string, now: number) => {
     me.helpers.set(agentId, helper)
   }
   return helper
+}
+
+// How the engine's list says an agent stands, as a helper does: one held
+// (on a plan's approval, on helpers of its own) is at work, and one between
+// turns (a teammate waiting for a message) has finished for now.
+const helperStatus = (status: AgentInfo['status']): Helper['status'] => {
+  if (status === 'pending' || status === 'running' || status === 'waiting') return 'running'
+  if (status === 'completed' || status === 'idle') return 'done'
+  return 'error'
 }
 
 const latestTool = (loop: Loop) => {
@@ -254,6 +267,7 @@ export const track = {
     loop.lastAt = now
     loop.stepping = Math.max(0, loop.stepping - 1)
     if (!usage) return
+    me.calledAt = now
     loop.context = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
     loop.output += usage.output_tokens
     const tokens = loop.context + usage.output_tokens
@@ -282,16 +296,19 @@ export const track = {
     loop.doing = latestTool(loop) ?? THINKING
   },
 
-  spawned(agentId: string, type: string, label: string, model: string | undefined, now: number) {
+  // `run` for a workflow's agent: the engine raises its spawn too, but no list
+  // names it, and its phase is in its meta file only.
+  spawned(agentId: string, type: string, label: string, model: string | undefined, now: number, run?: string) {
     const helper = helperOf(agentId, now)
     helper.type = type
     helper.label = label
     helper.model = model ?? helper.model
-    helper.isListed = true
+    helper.isListed = run === undefined
     helper.isNamed = true
     helper.status = 'running'
     helper.startedAt = now
     helper.endedAt = undefined
+    if (run) helper.run = run
   },
 
   turnCompleted(agentId: string | undefined, reason: string, usage: TurnUsage | undefined, now: number) {
@@ -327,17 +344,33 @@ export const track = {
     } else me.flash = undefined
   },
 
-  measured(context: { tokens?: number; percent?: number }, cost: { usd: number } | undefined, rateLimits: readonly SessionRateLimit[]) {
+  measured(context: { tokens?: number; percent?: number }, cost: { usd: number } | undefined, rateLimits: readonly SessionRateLimit[], now: number) {
     if (context.tokens !== undefined) me.context = context.tokens
     if (context.percent !== undefined) me.contextPercent = context.percent
     if (cost) me.costUsd = cost.usd
     // None before the first reply: keep what an earlier load read.
-    if (rateLimits.length > 0) me.limits = rateLimits.map(limitOf)
+    if (rateLimits.length === 0) return
+    // A reading is as fresh as the last call that brought it: stamped anew
+    // when it changes, or when a call has come back since.
+    const read = rateLimits.map(limitOf)
+    const heldAt = me.limits[0]?.at ?? 0
+    const isSame = JSON.stringify(read) === JSON.stringify(me.limits.map(({ at: _, ...limit }) => limit))
+    const at = isSame && me.calledAt <= heldAt ? heldAt : now
+    me.limits = read.map(limit => (at > 0 ? { ...limit, at } : limit))
+  },
+
+  // A model call came back, and with it the latest reading of the limits.
+  called(now: number) {
+    me.calledAt = now
   },
 
   listed(list: readonly AgentInfo[], now: number) {
+    // An agent the engine has let go of says no more when it ends: from now
+    // on it is at work only while it does something.
+    const ids = new Set(list.map(agent => agent.id))
+    for (const helper of me.helpers.values()) if (!ids.has(helper.id)) helper.isListed = false
     for (const agent of list) {
-      const status = agent.status === 'running' || agent.status === 'pending' ? 'running' : agent.status === 'completed' ? 'done' : 'error'
+      const status = helperStatus(agent.status)
       const helper = me.helpers.get(agent.id)
       if (!helper) {
         // One that ended before this module loaded is history, not news.
@@ -379,12 +412,12 @@ export const track = {
 }
 
 // A running helper at work until it ends: the engine lists it, or it has a
-// step or a tool call under way however long that takes, or had one a while
-// ago.
+// step or a tool call under way however long that takes, or started or had
+// one a while ago.
 const isAtWork = (helper: Helper, now: number) => {
   const loop = me.loops.get(helper.id)
   const isBusy = loop !== undefined && (loop.stepping > 0 || loop.tools.size > 0)
-  return helper.isListed || isBusy || now - (loop?.lastAt ?? 0) < HELPER_IDLE_MS
+  return helper.isListed || isBusy || now - Math.max(loop?.lastAt ?? 0, helper.startedAt) < HELPER_IDLE_MS
 }
 
 const phaseKey = (run: string | undefined, title: string | undefined) => (run && title ? `${run}:${title}` : undefined)
@@ -442,8 +475,9 @@ const isShown = (helper: Helper, now: number) => {
   const loop = me.loops.get(helper.id)
   // Nothing names it and it has called no tool: one of the engine's own loops.
   if (!helper.isListed && !helper.isNamed && (loop?.toolCalls ?? 0) === 0) return false
-  // It may yet be named: wait for the name rather than show it as "helper".
-  if (!helper.isListed && isUnnamed(helper) && isNamePending(me.sessionId, helper.id, now)) return false
+  // It may yet be named, or a workflow's agent placed in its phase: wait for
+  // its meta file rather than show it as "helper", or out of its phase.
+  if (!helper.isListed && !helper.isMetaRead && needsMeta(helper) && isNamePending(me.sessionId, helper.id, now)) return false
   if (helper.status !== 'running') {
     // A workflow's agent stays until every agent of its phase has finished.
     const phase = phaseOf(helper)
@@ -699,8 +733,9 @@ export const retire = async (io: Io, sessionId: string, now: number) => {
 // ------------------------------------------------------- usage limits --
 
 // One of the account's usage-limit windows as a session read it: how much of
-// it is used, 0 to 100, and when it resets, in clock milliseconds.
-export type Limit = { kind: string; used: number; resetsAt?: number }
+// it is used, 0 to 100, when it resets, and when it was read, in clock
+// milliseconds. A reading an older build kept has no time.
+export type Limit = { kind: string; used: number; resetsAt?: number; at?: number }
 
 // Two readings whose reset times are this close are of the same window.
 const SAME_WINDOW_MS = 10 * 60_000
@@ -713,21 +748,31 @@ const limitOf = (limit: SessionRateLimit): Limit => {
 const isLimit = (value: unknown): value is Limit => {
   if (value === null || typeof value !== 'object') return false
   const limit = value as Limit
-  return typeof limit.kind === 'string' && typeof limit.used === 'number' && (limit.resetsAt === undefined || typeof limit.resetsAt === 'number')
+  return (
+    typeof limit.kind === 'string' &&
+    typeof limit.used === 'number' &&
+    (limit.resetsAt === undefined || typeof limit.resetsAt === 'number') &&
+    (limit.at === undefined || typeof limit.at === 'number')
+  )
 }
 
 // The readings a file holds, any malformed one left out.
 const limitsIn = (value: unknown) => (Array.isArray(value) ? value.filter(isLimit) : [])
 
-// The best reading of each window among every session's: one of the latest
-// window, and the most used of those, since use only grows until a reset.
+// The best reading of each window among every session's: the latest read,
+// since a window's use can drop as well as grow (a plan upgraded, a window
+// reset early), and an idle session holds its last reading for hours. Of
+// readings as fresh (an older build's, which have no time), one of the latest
+// window, and the most used of those.
 export const bestLimits = (readings: readonly Limit[]) => {
   const byKind = new Map<string, Limit[]>()
   for (const reading of readings) byKind.set(reading.kind, [...(byKind.get(reading.kind) ?? []), reading])
   return [...byKind.values()]
     .map(group => {
-      const latest = Math.max(...group.map(reading => reading.resetsAt ?? 0))
-      return group
+      const freshest = Math.max(...group.map(reading => reading.at ?? 0))
+      const fresh = group.filter(reading => (reading.at ?? 0) === freshest)
+      const latest = Math.max(...fresh.map(reading => reading.resetsAt ?? 0))
+      return fresh
         .filter(reading => (reading.resetsAt ?? 0) >= latest - SAME_WINDOW_MS)
         .reduce((best, reading) =>
           reading.used > best.used || (reading.used === best.used && (reading.resetsAt ?? 0) > (best.resetsAt ?? 0)) ? reading : best,
@@ -907,7 +952,7 @@ type Peek = {
   isFinished: boolean
 }
 
-type Trail = { id: string; type: string; label: string; phase?: string; path: string; startedAt: number; writtenAt: number }
+type Trail = { id: string; type: string; label: string; phase?: string; run?: string; path: string; startedAt: number; writtenAt: number }
 
 const peeks = new Map<string, Peek>()
 const trails = new Map<string, Trail[]>()
@@ -1052,10 +1097,10 @@ const metaOf = async (io: Io, path: string): Promise<Meta> => {
 }
 
 // Subagent transcripts written lately, under <session>/subagents and one
-// level of workflow folders beneath it.
+// level of workflow folders beneath it, each folder a run.
 const trailsOf = async (io: Io, sessionDir: string, now: number) => {
   const found: Trail[] = []
-  const scan = async (folder: string) => {
+  const scan = async (folder: string, run?: string) => {
     const entries = await io.list(folder).catch(() => [])
     const byName = new Map(entries.map(entry => [entry.name, entry]))
     for (const entry of entries) {
@@ -1064,7 +1109,7 @@ const trailsOf = async (io: Io, sessionDir: string, now: number) => {
       const metaName = `agent-${id}.meta.json`
       const meta = await metaOf(io, join(folder, metaName))
       const startedAt = byName.get(metaName)?.mtimeMs || entry.mtimeMs
-      found.push({ id, type: meta.type, label: meta.label, phase: meta.phase, path: join(folder, entry.name), startedAt, writtenAt: entry.mtimeMs })
+      found.push({ id, type: meta.type, label: meta.label, phase: meta.phase, run, path: join(folder, entry.name), startedAt, writtenAt: entry.mtimeMs })
     }
     return entries
   }
@@ -1075,7 +1120,7 @@ const trailsOf = async (io: Io, sessionDir: string, now: number) => {
     for (const flow of await io.list(flows).catch(() => [])) {
       if (flow.kind !== 'dir') continue
       const stat = await io.stat(join(flows, flow.name)).catch(() => undefined)
-      if (stat && now - stat.mtimeMs < 3 * 60 * 60_000) await scan(join(flows, flow.name))
+      if (stat && now - stat.mtimeMs < 3 * 60 * 60_000) await scan(join(flows, flow.name), flow.name)
     }
   }
   return found.sort((a, b) => a.startedAt - b.startedAt)
@@ -1123,11 +1168,12 @@ export const peekPeers = async (io: Io, now: number) => {
 
 // --------------------------------------------------- naming the helpers --
 
-// A workflow's agents reach a session as steps and tool calls only: no spawn
-// or list event names them. Each has a meta file beside its transcript, in
-// <session>/subagents/workflows/<run>, that holds its label. A session names
-// its own helpers, and finds names for the ones a peer on an older build of
-// the mod published unnamed.
+// A workflow's agent says its phase in one place only: the meta file beside
+// its transcript, in <session>/subagents/workflows/<run>, which holds its
+// label too. Claude Code raises its spawn, with its label and run, or on
+// earlier releases nothing but its steps and tool calls. A session names its
+// own helpers and finds their phases, and does as much for the ones a peer
+// on an older build of the mod published without.
 type Naming = { meta?: Meta; tries: number; triedAt: number; firstAt: number }
 
 // By `<session id>:<agent id>`.
@@ -1142,6 +1188,10 @@ const runTimes = new Map<string, number>()
 let isNaming = false
 
 const isUnnamed = (helper: { type: string; label: string }) => helper.type === 'helper' && !helper.label
+
+// Unnamed, or a workflow's agent with no phase yet: its meta file says.
+const needsMeta = (helper: { type: string; label: string; phase?: string; run?: string }) =>
+  isUnnamed(helper) || (helper.phase === undefined && (helper.run !== undefined || helper.type === 'workflow-subagent'))
 
 // Not named yet, with tries and time left: shown once named, or once given
 // up on (it then shows as "helper", and takes its name if one turns up).
@@ -1181,7 +1231,8 @@ const runFoldersOf = async (io: Io, sessionDir: string, now: number) => {
 // Looks for one agent's meta file, at most NAME_TRIES times, each round: the
 // file comes a moment after the agent's first step. A miss lists the run
 // folders afresh next time, as the agent's run may be newer than the list.
-const findName = async (io: Io, sessionId: string, cwd: string, agentId: string, now: number) => {
+// The run named at its spawn, if it was, is looked in first.
+const findName = async (io: Io, sessionId: string, cwd: string, agentId: string, now: number, run?: string) => {
   const key = `${sessionId}:${agentId}`
   const naming = namings.get(key) ?? { tries: 0, triedAt: 0, firstAt: now }
   if (naming.meta || naming.tries >= NAME_TRIES || now - naming.triedAt < NAME_RETRY_MS) return naming.meta
@@ -1194,7 +1245,8 @@ const findName = async (io: Io, sessionId: string, cwd: string, agentId: string,
   const sessionDir = transcript.slice(0, -'.jsonl'.length)
   const found = await runFoldersOf(io, sessionDir, now)
   const last = lastRunFolders.get(sessionDir)
-  const folders = last && found.includes(last) ? [last, ...found.filter(folder => folder !== last)] : found
+  const first = [run && join(found[0]!, 'workflows', run), last && found.includes(last) ? last : undefined].filter((folder): folder is string => !!folder)
+  const folders = [...new Set([...first, ...found])]
   for (const folder of folders) {
     const path = join(folder, `agent-${agentId}.meta.json`)
     if (!(await io.exists(path))) continue
@@ -1210,35 +1262,39 @@ const findName = async (io: Io, sessionId: string, cwd: string, agentId: string,
   return undefined
 }
 
-// A peer's helper with the name found for it, if it went unnamed.
+// A peer's helper with the name and phase found for it, if it went without.
 const named = (sessionId: string, helper: HelperSnap): HelperSnap => {
-  if (!isUnnamed(helper)) return helper
+  if (!needsMeta(helper)) return helper
   const meta = namings.get(`${sessionId}:${helper.id}`)?.meta
-  return meta ? { ...helper, type: meta.type, label: meta.label, phase: meta.phase, run: meta.run } : helper
+  if (!meta) return helper
+  return { ...helper, type: isUnnamed(helper) ? meta.type : helper.type, label: helper.label || meta.label, phase: meta.phase, run: meta.run ?? helper.run }
 }
 
-// Every other round: names this session's unnamed helpers, and finds names
-// for the ones peers published unnamed.
+// Every other round: names this session's unnamed helpers and finds its
+// workflow agents' phases, and does as much for the ones peers published
+// without.
 export const nameHelpers = async (io: Io, now: number) => {
   if (isNaming || !me.sessionId || !where.config) return
   isNaming = true
   try {
     for (const helper of me.helpers.values()) {
-      if (!isUnnamed(helper) || helper.status !== 'running') continue
-      const meta = await findName(io, me.sessionId, me.cwd, helper.id, now)
+      // A workflow's agent is placed in its phase even once it has finished.
+      if (helper.isMetaRead || !needsMeta(helper) || (isUnnamed(helper) && helper.status !== 'running')) continue
+      const meta = await findName(io, me.sessionId, me.cwd, helper.id, now, helper.run)
       if (!meta) continue
-      helper.type = meta.type
-      helper.label = meta.label
+      if (isUnnamed(helper)) helper.type = meta.type
+      helper.label ||= meta.label
       helper.phase = meta.phase
-      helper.run = meta.run
+      helper.run = meta.run ?? helper.run
       // Known now: shown while it works, tool calls or not.
       helper.isNamed = true
+      helper.isMetaRead = true
       joinPhase(helper, now)
     }
     for (const snap of live.values()) {
       const cwd = snap.cwd || registry.get(snap.sessionId)?.cwd || ''
       for (const helper of snap.helpers) {
-        if (isUnnamed(helper) && helper.endedAt === undefined) await findName(io, snap.sessionId, cwd, helper.id, now)
+        if (needsMeta(helper) && helper.endedAt === undefined) await findName(io, snap.sessionId, cwd, helper.id, now, helper.run)
       }
     }
     for (const [key, naming] of namings) if (now - naming.triedAt > NAMING_FORGET_MS) namings.delete(key)
@@ -1318,13 +1374,13 @@ const rowOfSnap = (entry: Entry | undefined, snap: SessionSnap, isSelf: boolean,
     output: snap.output,
     costUsd: snap.costUsd,
     source: isSelf ? 'this session' : 'live',
-    // A peer's unnamed helpers by the names found for them, the ones still
+    // A peer's helpers by the names and phases found for them, the ones still
     // being looked up left out until then.
     helpers: isSelf
       ? snap.helpers
       : snap.helpers
           .map(helper => named(snap.sessionId, helper))
-          .filter(helper => !isUnnamed(helper) || helper.endedAt !== undefined || !isNamePending(snap.sessionId, helper.id, now)),
+          .filter(helper => !needsMeta(helper) || helper.endedAt !== undefined || !isNamePending(snap.sessionId, helper.id, now)),
     phases: Array.isArray(snap.phases) ? snap.phases.filter(isPhaseSnap) : [],
   }
 }
@@ -1340,7 +1396,7 @@ const rowOfPeek = (entry: Entry, now: number): Row => {
     .map((trail): HelperSnap | undefined => {
       const seen = peeks.get(trail.path)
       const isQuiet = now - trail.writtenAt > 8_000
-      const base = { id: trail.id, type: trail.type, label: trail.label, phase: trail.phase, model: seen?.model, startedAt: trail.startedAt, context: seen?.context }
+      const base = { id: trail.id, type: trail.type, label: trail.label, phase: trail.phase, run: trail.run, model: seen?.model, startedAt: trail.startedAt, context: seen?.context }
       if (seen?.isFinished && isQuiet) {
         if (now - trail.writtenAt > HELPER_LINGER_MS) return undefined
         return { ...base, mood: 'done', detail: 'Finished', endedAt: trail.writtenAt }
@@ -1401,11 +1457,15 @@ const sessionMember = (row: Row, isConducting: boolean, now: number): CrewMember
   }
 }
 
+// A workflow's agent, rather than a subagent the model started itself.
+const isWorkflowHelper = (helper: HelperSnap) => helper.type === 'workflow-subagent' || helper.phase !== undefined || helper.run !== undefined
+
 // What a helper goes by: a workflow's agent by the label its workflow gave
-// it ("write:layout"), any other by its type and what it was asked to do.
+// it ("write:layout"), whatever its type, any other by its type and what it
+// was asked to do.
 const helperName = (helper: HelperSnap) => {
   const type = helper.type || 'helper'
-  if (type === 'workflow-subagent') return helper.label || (helper.phase ? `${helper.phase} agent` : 'workflow agent')
+  if (isWorkflowHelper(helper)) return helper.label || (helper.phase ? `${helper.phase} agent` : 'workflow agent')
   return helper.label ? `${type} · ${helper.label}` : type
 }
 
@@ -1510,15 +1570,16 @@ const pickHelpers = (helpers: readonly HelperSnap[], max: number) => {
   return helpers.filter(helper => kept.has(helper))
 }
 
-// A workflow's agent, rather than a subagent the model started itself.
-const isWorkflowHelper = (helper: HelperSnap) => helper.type === 'workflow-subagent' || helper.phase !== undefined || helper.run !== undefined
-
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 // A phase's helpers, and the phase as its session published it, if it did.
 type PhaseGroup = { key: string; title: string; snap?: PhaseSnap; helpers: HelperSnap[]; startedAt: number }
 
-const groupTitle = (helper: HelperSnap) => helper.phase || (helper.type === 'workflow-subagent' ? 'Workflow' : 'Helpers')
+const groupTitle = (helper: HelperSnap) => helper.phase || (isWorkflowHelper(helper) ? 'Workflow' : 'Helpers')
+
+// Its phase of its run: each run's phases apart, however alike their titles,
+// and a run without phases one group of its own.
+const groupKey = (helper: HelperSnap) => phaseKey(helper.run, helper.phase) ?? (helper.run ? `${helper.run}:` : groupTitle(helper))
 
 // A phase's line: how many of its agents are at work, need you, are done or
 // failed, how long it has run and the tokens it used. A phase that is over
@@ -1575,7 +1636,7 @@ const crowdOf = (row: Row, helpers: readonly HelperSnap[], now: number): CrewCro
   const groups = new Map<string, PhaseGroup>()
   for (const snap of row.phases) groups.set(snap.key, { key: snap.key, title: snap.title, snap, helpers: [], startedAt: snap.startedAt })
   for (const helper of shown) {
-    const key = phaseKey(helper.run, helper.phase) ?? groupTitle(helper)
+    const key = groupKey(helper)
     const group = groups.get(key) ?? { key, title: groupTitle(helper), helpers: [], startedAt: helper.startedAt }
     group.helpers.push(helper)
     group.startedAt = Math.min(group.startedAt, helper.startedAt)

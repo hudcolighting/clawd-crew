@@ -1,5 +1,5 @@
-import type { SessionRateLimit } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import type { AgentInfo, SessionRateLimit } from 'claude-code'
+import { type TestBody, expect, mock, test } from 'claude-code/testing'
 
 import { ANIMATIONS, VARIANTS, framesOf } from '../hooks/sprites.js'
 
@@ -45,6 +45,12 @@ const PEER_PROJECT = `${PROJECTS}\\C--work-weather`
 const PEER_RUNS = `${PEER_PROJECT}\\${PEER}\\subagents\\workflows`
 const QUIET_TRANSCRIPT = `${PROJECTS}\\C--work-site\\${QUIET}.jsonl`
 const BODY = '#D97757'
+// Where a command run by hand comes from, as the engine stamps it.
+const TYPED = { origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+// The paths here are Windows ones. Where the system takes them for relative
+// (macOS, Linux), the engine resolves them against the mod's folder before a
+// hook sees them: each fs hook reads a path from its drive on.
+const pathOf = (path: string) => path.slice(Math.max(0, path.indexOf('C:\\')))
 
 const PANE = {
   plugin: 'clawd-crew',
@@ -167,7 +173,7 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
       ],
     }),
   )
-  let agents: { id: string; description: string; type: string; status: string }[] = []
+  let agents: AgentInfo[] = []
   let toolGate: (() => void) | undefined
   const ran: string[][] = []
 
@@ -202,33 +208,39 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
     return { value: { isPlaced: true } }
   })
   on('ui.log', () => ({ value: undefined }))
-  on('fs.read', (_$, e) => (files.has(e.path) ? { value: files.get(e.path)! } : { deny: 'ENOENT' }))
+  on('fs.read', (_$, e) => {
+    const path = pathOf(e.path)
+    return files.has(path) ? { value: files.get(path)! } : { deny: 'ENOENT' }
+  })
   on('fs.write', (_$, e) => {
-    files.set(e.path, e.text)
+    files.set(pathOf(e.path), e.text)
     return { value: undefined }
   })
   const lookups = new Map<string, number>()
   on('fs.exists', (_$, e) => {
-    const name = e.path.split('\\').pop() ?? ''
+    const path = pathOf(e.path)
+    const name = path.split('\\').pop() ?? ''
     if (name.endsWith('.meta.json')) lookups.set(name, (lookups.get(name) ?? 0) + 1)
-    return { value: files.has(e.path) }
+    return { value: files.has(path) }
   })
   on('fs.stat', (_$, e) => {
-    if (e.path === QUIET_RUN) return { value: { kind: 'dir', size: 0, mtimeMs: NOW - 1_000, isLink: false } }
-    return files.has(e.path) ? { value: { kind: 'file', size: files.get(e.path)!.length, mtimeMs: NOW - 1_000, isLink: false } } : { deny: 'ENOENT' }
+    const path = pathOf(e.path)
+    if (path === QUIET_RUN) return { value: { kind: 'dir', size: 0, mtimeMs: NOW - 1_000, isLink: false } }
+    return files.has(path) ? { value: { kind: 'file', size: files.get(path)!.length, mtimeMs: NOW - 1_000, isLink: false } } : { deny: 'ENOENT' }
   })
   on('fs.list', (_$, e) => {
-    if (e.path === SESSIONS) return { value: Object.keys(registryRows).reverse().map(name => ({ name, kind: 'file', size: 100, mtimeMs: NOW, isLink: false })) }
+    const path = pathOf(e.path)
+    if (path === SESSIONS) return { value: Object.keys(registryRows).reverse().map(name => ({ name, kind: 'file' as const, size: 100, mtimeMs: NOW, isLink: false })) }
     // As the engine lists them: a time for a file, none for a folder.
-    const entry = (name: string, kind: string, size = 0) => ({ name, kind, size, mtimeMs: kind === 'dir' ? 0 : NOW - 1_000, isLink: false })
-    if (e.path === PROJECTS) return { value: [entry('C--work-site', 'dir')] }
-    if (e.path === SITE) return { value: [entry(`${QUIET}.jsonl`, 'file', 1), entry(`${CLOSED}.jsonl`, 'file', 5_000), entry(CLOSED, 'dir')] }
-    if (e.path === AGENTS) return { value: [entry('agent-q1.jsonl', 'file', 3_000)] }
-    if (e.path === OWN_RUNS) return { value: [entry('wf_1', 'dir')] }
-    if (e.path === PEER_RUNS) return { value: [entry('wf_p', 'dir')] }
-    if (e.path === QUIET_AGENTS && isQuietFlowing) return { value: [entry('workflows', 'dir')] }
-    if (e.path === `${QUIET_AGENTS}\\workflows`) return { value: [entry('wf_q', 'dir')] }
-    if (e.path === QUIET_RUN) return { value: [entry('agent-q2.jsonl', 'file', 10), entry('agent-q2.meta.json', 'file', 10)] }
+    const entry = (name: string, kind: 'file' | 'dir', size = 0) => ({ name, kind, size, mtimeMs: kind === 'dir' ? 0 : NOW - 1_000, isLink: false })
+    if (path === PROJECTS) return { value: [entry('C--work-site', 'dir')] }
+    if (path === SITE) return { value: [entry(`${QUIET}.jsonl`, 'file', 1), entry(`${CLOSED}.jsonl`, 'file', 5_000), entry(CLOSED, 'dir')] }
+    if (path === AGENTS) return { value: [entry('agent-q1.jsonl', 'file', 3_000)] }
+    if (path === OWN_RUNS) return { value: [entry('wf_1', 'dir')] }
+    if (path === PEER_RUNS) return { value: [entry('wf_p', 'dir')] }
+    if (path === QUIET_AGENTS && isQuietFlowing) return { value: [entry('workflows', 'dir')] }
+    if (path === `${QUIET_AGENTS}\\workflows`) return { value: [entry('wf_q', 'dir')] }
+    if (path === QUIET_RUN) return { value: [entry('agent-q2.jsonl', 'file', 10), entry('agent-q2.meta.json', 'file', 10)] }
     return { deny: 'ENOENT' }
   })
   on('process.run', (_$, e) => {
@@ -294,8 +306,9 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
   expect(openedColumns).toBe(56)
 
   // The header: the best reading of each usage window among the sessions'
-  // (this one's 50% over the peer's 45% of the same window), one kept from
-  // before whose window has reset, and the tokens and cost of the crew.
+  // (this one's 50%, read just now, over the 45% the peer's older build
+  // published with no time), one kept from before whose window has reset,
+  // and the tokens and cost of the crew.
   expect(texts).toContain('5-hour')
   expect(texts).toContain('50% left')
   expect(texts).toContain('· resets in 2h 14m')
@@ -329,9 +342,10 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
   // Half the 5-hour window is left: its bar is half full, in amber.
   const amber = (await desk.findAll({ type: 'Box' })).filter(found => found.props.backgroundColor === '#E5A33D')
   expect(amber.map(found => found.props.width)).toEqual([4])
-  // The best readings are kept for sessions yet to start.
+  // The best readings are kept for sessions yet to start, with when each
+  // was read where that is known.
   expect(JSON.parse(files.get(LIMITS) ?? '{}').limits).toEqual([
-    { kind: 'five_hour', used: 50, resetsAt: FIVE_HOUR_RESET },
+    { kind: 'five_hour', used: 50, resetsAt: FIVE_HOUR_RESET, at: NOW },
     { kind: 'seven_day', used: 81, resetsAt: WEEK_RESET },
     { kind: 'spend_limit', used: 90, resetsAt: NOW - 60_000 },
   ])
@@ -401,8 +415,10 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
   mine = (await desk.findAll({ type: 'Text' })).map(found => found.text)
   expect(mine).toContain('Explore · Survey the repo')
   expect(mine).toContain('84k ctx (42%) · 12k out · $1.23')
-  // The engine now reads the week at 70% used; the peer's 81% still stands.
-  expect(mine).toContain('19% left')
+  // The engine now reads the week at 70% used: read just now, it stands over
+  // the peer's 81%, which has no time.
+  expect(mine).toContain('30% left')
+  expect(mine).not.toContain('19% left')
   // Between steps, with the helper sent off, it waits on it: the words
   // follow at once, the animation holds a moment rather than flickering.
   expect(mine).toContain('Waiting on 1 helper')
@@ -428,16 +444,17 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
   expect(published).toMatchObject({ v: 1, sessionId: SELF, model: 'claude-opus-5-5', mood: 'done' })
 
   // The SVG sprites stay one command away.
-  await $.command.run({ command: 'clawds', args: 'style svg' })
+  await $.command.run({ command: 'clawds', args: 'style svg', ...TYPED })
   const svgs = await desk.findAll({ type: 'Svg' })
   expect(svgs.length).toBe(7)
   expect(String(svgs[0]?.props.source)).toContain('color-scheme:light dark')
   expect(await desk.findAll({ type: 'Client' })).toHaveLength(0)
-  await $.command.run({ command: 'clawds', args: 'style pixels' })
+  await $.command.run({ command: 'clawds', args: 'style pixels', ...TYPED })
   expect(await desk.findAll({ type: 'Client' })).toHaveLength(7)
 
-  // A workflow's agent reaches this session as steps and tool calls only, so
-  // no event names it; the meta file beside its transcript does.
+  // On an earlier Claude Code, a workflow's agent reaches this session as
+  // steps and tool calls only, so no event names it; the meta file beside
+  // its transcript does.
   files.set(`${OWN_PROJECT}\\${SELF}.jsonl`, 'x')
   files.set(`${OWN_RUNS}\\wf_1\\agent-wf1.meta.json`, JSON.stringify({ agentType: 'workflow-subagent', description: 'write:layout', workflowPhase: 'Write' }))
   files.set(`${OWN_RUNS}\\wf_1\\agent-wf2.meta.json`, JSON.stringify({ agentType: 'workflow-subagent', description: 'write:refresh', workflowPhase: 'Write' }))
@@ -657,10 +674,16 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
 // The same few sessions, for the tests below: this one and Weather app,
 // which started an hour before it, each in the state a test gives it.
 const pair = async (
-  $: Parameters<Parameters<typeof test>[2]>[0],
-  on: Parameters<Parameters<typeof test>[2]>[1],
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
   own: { status: string; statusUpdatedAt: number },
-  { seed = {}, ticks = 3, answer = [], dirs = {} }: { seed?: Record<string, string>; ticks?: number; answer?: SessionRateLimit[]; dirs?: Record<string, string[]> } = {},
+  {
+    seed = {},
+    ticks = 3,
+    answer = [],
+    dirs = {},
+    agents = () => [],
+  }: { seed?: Record<string, string>; ticks?: number; answer?: SessionRateLimit[]; dirs?: Record<string, string[]>; agents?: () => AgentInfo[] } = {},
 ) => {
   const rows = {
     '200.json': { pid: 200, sessionId: PEER, cwd: 'C:\\work\\weather', startedAt: NOW - 7_200_000, name: 'Weather app', status: 'busy', statusUpdatedAt: NOW - 5_000 },
@@ -687,7 +710,7 @@ const pair = async (
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
-  on('agent.list', () => ({ value: [] }))
+  on('agent.list', () => ({ value: agents() }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   const opened: string[] = []
   on('ui.open', (_$, e) => {
@@ -695,17 +718,24 @@ const pair = async (
     return { value: { isPlaced: true } }
   })
   on('ui.log', () => ({ value: undefined }))
-  on('fs.read', (_$, e) => (files.has(e.path) ? { value: files.get(e.path)! } : { deny: 'ENOENT' }))
+  on('fs.read', (_$, e) => {
+    const path = pathOf(e.path)
+    return files.has(path) ? { value: files.get(path)! } : { deny: 'ENOENT' }
+  })
   on('fs.write', (_$, e) => {
-    files.set(e.path, e.text)
+    files.set(pathOf(e.path), e.text)
     return { value: undefined }
   })
-  on('fs.exists', (_$, e) => ({ value: files.has(e.path) }))
-  on('fs.stat', (_$, e) => (files.has(e.path) ? { value: { kind: 'file', size: files.get(e.path)!.length, mtimeMs: NOW - 1_000, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.exists', (_$, e) => ({ value: files.has(pathOf(e.path)) }))
+  on('fs.stat', (_$, e) => {
+    const path = pathOf(e.path)
+    return files.has(path) ? { value: { kind: 'file', size: files.get(path)!.length, mtimeMs: NOW - 1_000, isLink: false } } : { deny: 'ENOENT' }
+  })
   on('fs.list', (_$, e) => {
-    if (e.path === SESSIONS) return { value: Object.keys(rows).map(name => ({ name, kind: 'file', size: 100, mtimeMs: NOW, isLink: false })) }
-    const folders = dirs[e.path]
-    if (folders) return { value: folders.map(name => ({ name, kind: 'dir', size: 0, mtimeMs: 0, isLink: false })) }
+    const path = pathOf(e.path)
+    if (path === SESSIONS) return { value: Object.keys(rows).map(name => ({ name, kind: 'file' as const, size: 100, mtimeMs: NOW, isLink: false })) }
+    const folders = dirs[path]
+    if (folders) return { value: folders.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }
     return { deny: 'ENOENT' }
   })
   on('process.run', (_$, e) => {
@@ -833,10 +863,10 @@ test('a settings button picks the animation each mood is drawn with', { timeoutM
   // boxes on the desktop, an SVG where the sprites are SVGs, cells on a
   // terminal.
   expect((await session.desk.find({ type: 'Client', key: 'icon' }))?.props).toMatchObject({ width: 10, height: 5 })
-  await $.command.run({ command: 'clawds', args: 'style svg' })
+  await $.command.run({ command: 'clawds', args: 'style svg', ...TYPED })
   const iconSvg = (await session.desk.findAll({ type: 'Svg' })).find(found => found.props.alt === 'Clawd Crew')
   expect(String(iconSvg?.props.source)).toContain('fill="#F2C14E"')
-  await $.command.run({ command: 'clawds', args: 'style pixels' })
+  await $.command.run({ command: 'clawds', args: 'style pixels', ...TYPED })
   const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await term.find({ type: 'Raster', key: 'icon' }))?.props).toMatchObject({ columns: 14, rows: 13 })
   // The arrows turn the page, and stop at either end.
@@ -910,7 +940,7 @@ test('the first click into the pane lands', { timeoutMs: 30_000 }, async ($, on)
 
 test('a setting decides whether the pane opens by itself', { timeoutMs: 30_000 }, async ($, on) => {
   on('session.attach', (_$, e) => ({ clientId: e.clientId }))
-  on('ui.close', () => undefined)
+  on('ui.close', () => ({ value: undefined }))
   on('command.run', () => ({ text: '' }))
   const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 })
   const reopened = async () => {
@@ -934,7 +964,7 @@ test('a setting decides whether the pane opens by itself', { timeoutMs: 30_000 }
   expect(await setting()).toEqual([undefined, 'primary'])
   expect(await reopened()).toBe(false)
   // Opening it with /clawds leaves the setting as it is.
-  await $.command.run({ command: 'clawds', args: '' })
+  await $.command.run({ command: 'clawds', args: '', ...TYPED })
   expect(await setting()).toEqual([undefined, 'primary'])
   expect(await reopened()).toBe(false)
   // On again.
@@ -942,7 +972,7 @@ test('a setting decides whether the pane opens by itself', { timeoutMs: 30_000 }
   expect(await setting()).toEqual(['primary', undefined])
   expect(await reopened()).toBe(true)
   // /clawds hide turns it off, as it says.
-  await $.command.run({ command: 'clawds', args: 'hide' })
+  await $.command.run({ command: 'clawds', args: 'hide', ...TYPED })
   expect(await reopened()).toBe(false)
 })
 
@@ -1067,4 +1097,134 @@ test('a pick kept from before is drawn from the start', { timeoutMs: 30_000 }, a
   const seed = { [SETTINGS]: JSON.stringify({ v: 1, animations: { idle: 'idle.tune' } }) }
   const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 }, { seed, ticks: 1 })
   expect((await session.desk.find({ type: 'Client', key: `sprite:${SELF}` }))?.props.props).toMatchObject({ mood: 'idle.tune' })
+})
+
+test('a plan upgraded shows its weekly use at once', { timeoutMs: 30_000 }, async ($, on) => {
+  // Before the upgrade, every session read the week at 80% used: kept from
+  // then, and still what the Weather app session, idle since, publishes.
+  const before = [{ kind: 'seven_day', used: 80, resetsAt: WEEK_RESET, at: NOW - 10 * 60_000 }]
+  const peer = (at: number, limits: unknown[]) =>
+    JSON.stringify({ v: 1, sessionId: PEER, cwd: 'C:\\work\\weather', mood: 'idle', detail: '', limits, helpers: [], updatedAt: at })
+  const seed = { [LIMITS]: JSON.stringify({ v: 1, limits: before }), [`${LIVE}\\${PEER}.json`]: peer(NOW, before) }
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 }, { seed })
+  const weekly = async () => {
+    const texts = await session.texts()
+    return texts[texts.indexOf('Weekly') + 1]
+  }
+  expect(await weekly()).toBe('20% left')
+  // Upgraded, the plan's limit is higher: this session's next reply reads
+  // the same use as 20% of the week, and that shows at once, though use
+  // only grows within a window otherwise.
+  await $.session.measure({
+    context: { window: 200_000 },
+    rateLimits: [{ kind: 'seven_day', percentUsed: 20, resetsAt: iso(WEEK_RESET) }],
+    changed: ['rateLimits'],
+  })
+  for (let i = 0; i < 2; i++) await session.clock.advance(1_000)
+  expect(await weekly()).toBe('80% left')
+  expect(JSON.parse(session.files.get(LIMITS) ?? '{}').limits).toEqual([{ kind: 'seven_day', used: 20, resetsAt: WEEK_RESET, at: NOW + 3_000 }])
+  // The idle session's reading from before the upgrade stays put, and does
+  // not win the window back.
+  session.files.set(`${LIVE}\\${PEER}.json`, peer(session.clock.now(), before))
+  for (let i = 0; i < 4; i++) await session.clock.advance(1_000)
+  expect(await weekly()).toBe('80% left')
+  // Once it replies, its reading is the latest.
+  session.files.set(`${LIVE}\\${PEER}.json`, peer(session.clock.now(), [{ kind: 'seven_day', used: 22, resetsAt: WEEK_RESET, at: session.clock.now() }]))
+  for (let i = 0; i < 2; i++) await session.clock.advance(1_000)
+  expect(await weekly()).toBe('78% left')
+})
+
+test("a workflow's agents show under their own run's phases", { timeoutMs: 30_000 }, async ($, on) => {
+  // Claude Code raises each workflow agent's spawn, with its label and run;
+  // its phase is in its meta file only. Two runs here, each with a Verify
+  // phase, and one agent of a type of its own.
+  const meta = (description: string, workflowPhase: string, agentType = 'workflow-subagent') => JSON.stringify({ agentType, description, workflowPhase })
+  const seed = {
+    [`${OWN_PROJECT}\\${SELF}.jsonl`]: 'x',
+    [`${OWN_RUNS}\\wf_a\\agent-a1.meta.json`]: meta('research:cache', 'Research'),
+    [`${OWN_RUNS}\\wf_a\\agent-a2.meta.json`]: meta('verify:links', 'Verify'),
+    [`${OWN_RUNS}\\wf_b\\agent-b1.meta.json`]: meta('verify:pages', 'Verify'),
+    [`${OWN_RUNS}\\wf_b\\agent-b2.meta.json`]: meta('explore:docs', 'Verify', 'Explore'),
+    // The Weather app session's build of the mod published its workflow's
+    // agent named, by its spawn, but with no phase: found in its folders.
+    [`${PEER_PROJECT}\\${PEER}.jsonl`]: 'x',
+    [`${PEER_RUNS}\\wf_p\\agent-p1.meta.json`]: meta('test:units', 'Test'),
+    [`${LIVE}\\${PEER}.json`]: JSON.stringify({
+      v: 1,
+      sessionId: PEER,
+      cwd: 'C:\\work\\weather',
+      mood: 'delegating',
+      detail: 'Running a workflow',
+      helpers: [{ id: 'p1', type: 'workflow-subagent', label: 'test:units', mood: 'running', detail: 'Running the tests', startedAt: NOW - 5_000 }],
+      updatedAt: NOW + 10_000,
+    }),
+  }
+  const ids: Record<string, string> = { 'research:cache': 'a1', 'verify:links': 'a2', 'verify:pages': 'b1', 'explore:docs': 'b2' }
+  on('agent.spawn', (_$, e) => ({ model: 'claude-haiku-4-5-20251001', agentId: ids[e.description]! }))
+  on('turn.step', async function* (_$, e) {
+    yield { kind: 'thinking', index: 0, text: 'hmm' }
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'tool_use',
+      usage: { model: 'claude-haiku-4-5-20251001', input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 0 },
+    }
+  })
+  const session = await pair($, on, { status: 'busy', statusUpdatedAt: NOW - 5_000 }, { seed, dirs: { [OWN_RUNS]: ['wf_a', 'wf_b'], [PEER_RUNS]: ['wf_p'] } })
+  const spawn = (description: string, subagentType: string, runId: string, agentIndex: number) =>
+    $.agent.spawn({ tool_use_id: `toolu_${runId}`, prompt: description, description, subagentType, background: true, workflow: { runId, agentIndex } } as never)
+  await spawn('research:cache', 'workflow-subagent', 'wf_a', 1)
+  await spawn('verify:links', 'workflow-subagent', 'wf_a', 2)
+  await spawn('verify:pages', 'workflow-subagent', 'wf_b', 1)
+  await spawn('explore:docs', 'Explore', 'wf_b', 2)
+  for (const id of ['a1', 'a2', 'b1', 'b2']) {
+    for await (const _ of $.turn.step({ turnId: `t_${id}`, index: 0, model: 'claude-haiku-4-5-20251001', messageCount: 2, agentId: id })) {
+      // drain
+    }
+  }
+  for (let i = 0; i < 4; i++) await session.clock.advance(1_000)
+  const texts = await session.texts()
+  // A phase line each: Research, and each run's Verify apart.
+  expect(texts.filter(text => text === 'Research')).toHaveLength(1)
+  expect(texts.filter(text => text === 'Verify')).toHaveLength(2)
+  // Then the Weather app's, in a phase of its own.
+  expect(texts.filter(text => /^\d working · /.test(text))).toEqual(['1 working · 4s · 1k tok', '1 working · 4s · 1k tok', '2 working · 4s · 2k tok', '1 working · 12s'])
+  // Each agent a tiny Clawd under its phase, by its label, whatever its type:
+  // none is a helper's row of its own.
+  for (const name of ['research:cache', 'verify:links', 'verify:pages', 'explore:docs']) expect(texts).toContain(name)
+  expect(texts.some(text => text.startsWith('Explore · '))).toBe(false)
+  expect((await session.desk.find({ type: 'Client', key: `sprite:${SELF}:b2` }))?.props.props).toMatchObject({ size: 'tiny' })
+  expect(texts.indexOf('verify:links')).toBeLessThan(texts.indexOf('verify:pages'))
+  expect(texts.indexOf('research:cache')).toBeLessThan(texts.indexOf('verify:links'))
+  // Published with its run and phase, for the other sessions to place it.
+  expect(JSON.parse(session.files.get(`${LIVE}\\${SELF}.json`) ?? '{}').helpers).toContainEqual(
+    expect.objectContaining({ id: 'b2', type: 'Explore', label: 'explore:docs', phase: 'Verify', run: 'wf_b' }),
+  )
+  expect(texts[texts.indexOf('Clawd mod (this one)') + 1]).toBe('Waiting on 4 helpers')
+  expect(texts.indexOf('Weather app')).toBeLessThan(texts.indexOf('Test'))
+  expect(texts.indexOf('Test')).toBeLessThan(texts.indexOf('test:units'))
+})
+
+test("a helper the engine holds or rests is not taken for stopped", { timeoutMs: 30_000 }, async ($, on) => {
+  let status: AgentInfo['status'] = 'running'
+  on('agent.spawn', () => ({ model: 'claude-haiku-4-5-20251001', agentId: 'bg1' }))
+  const agents = (): AgentInfo[] => [{ id: 'bg1', description: 'Survey the repo', type: 'Explore', status }]
+  const session = await pair($, on, { status: 'busy', statusUpdatedAt: NOW - 5_000 }, { agents })
+  await $.agent.spawn({ tool_use_id: 'toolu_bg', prompt: 'look around', description: 'Survey the repo', subagentType: 'Explore', background: true } as never)
+  // Held, waiting on helpers of its own: still at work.
+  status = 'waiting'
+  for (let i = 0; i < 4; i++) await session.clock.advance(1_000)
+  let texts = await session.texts()
+  expect(texts).toContain('Explore · Survey the repo')
+  expect(texts).not.toContain('Stopped early')
+  expect(texts).toContain('Waiting on 1 helper')
+  // Between turns, until a message wakes it: finished for now.
+  status = 'idle'
+  for (let i = 0; i < 4; i++) await session.clock.advance(1_000)
+  texts = await session.texts()
+  expect(texts).toContain('Finished')
+  expect(texts).not.toContain('Stopped early')
 })
