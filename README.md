@@ -49,9 +49,10 @@ To try it in one session only, start that session with `claude --plugin-dir <fol
 Every session is a Clawd with three or four lines beside it: its name, what it is doing, its model and how long it has been working (or idle), and its context, output tokens and cost. The session whose pane you are looking at is always on top. Below it come the others, oldest first, with sleeping ones (idle for more than 10 minutes) below all the awake ones.
 
 - **Subagents** show as smaller Clawds under the session that started them, with their type and task ("Explore · Map the theme tokens"), at most 8 at a time. Each stays 12 seconds after it finishes.
-- **Workflows** get a view of their own: their agents in two columns under the workflow's phases (two workflows' phases apart, however alike their names), each a tiny Clawd beside its name, what it is doing and the tokens it has used. Each phase has a line with its agents' counts, its time and its tokens. A finished phase folds into one line, checked off in green or crossed off in red, and the phase lines go 3 minutes after the workflow's last agent finishes. While a session runs a workflow, its Clawd conducts the crowd from a podium.
+- **Workflows** get a view of their own: their agents in two columns under the workflow's phases (two workflows' phases apart, however alike their names), each a tiny Clawd beside its name, what it is doing and the tokens it has used. Each run is headed by the workflow's name and how far it has got ("theme-refresh · phase 4 of 5 · 6 of 12 agents done"), the phases counted from the ones its script declares, and each phase has a line with its agents' counts, its time and its tokens. A finished phase folds into one line, checked off in green or crossed off in red, and the phase lines go 3 minutes after the workflow's last agent finishes. While a session runs a workflow, its Clawd conducts the crowd from a podium.
 - **A session waiting on its helpers**, between steps of its own, shows "Waiting on 2 helpers" and delegates (or rallies, for a workflow) rather than thinking; a tool call or step of its own shows as itself.
 - **A session at work in the background**, such as a workflow running between phases, shows "Working in the background" rather than napping.
+- **The ▸ beside a Clawd** opens its detail, and closes it again: a session's folder, how long it has been open and its last five steps; a subagent's whole task, its type and every token it has used; a workflow agent's task, workflow and phase, model, time and tokens. One is open at a time.
 
 ## The Clawds
 
@@ -81,11 +82,14 @@ A Clawd keeps an animation at least 2 seconds before showing the next, so it doe
 
 ## Usage limits and totals
 
-The header has six lines:
+The header has these lines:
 
-- **5-hour** and **Weekly**: how much of your plan's usage limits is left, and how long until each resets. The bar drains as you use the window: green while more than half is left, amber at half or less, red at a fifth or less.
+- **5-hour** and **Weekly**: how much of your plan's usage limits is left, and how long until each resets. The bar drains as you use the window: green while more than half is left, amber at half or less, red at a fifth or less. When the pace you have been going at would use a window up before it resets, a line under its bar says when: "out in 1h 15m at this pace". The pace is the last hour's cost (the last day's, for the week) at the share of the window each dollar has taken since it opened; use the transcripts don't see, such as claude.ai's, can make it read early or late.
 - **Today**, **Week** and **Total**: the input tokens (cached and not), output tokens and cost of every model call in every session, subagents and closed sessions included. Today starts at your local midnight. Week starts when the weekly limit's window opened, so it lines up with the Weekly bar (with no weekly reading, it covers the last 7 days). Total goes back to your oldest transcript.
+- **24h**: the last day's cost as a sparkline, a bar for every quarter hour or every few, as the pane's width allows, and what it comes to.
 - **Crew**: how many sessions there are, how many helpers are working, and how many sessions need you.
+
+The same, in one line, sits under the prompt of every session: the crew and each limit's share left, with its warning if it has one. The settings turn it off.
 
 ### Getting them
 
@@ -109,20 +113,20 @@ The mod has no network code of its own, and nothing it reads leaves your compute
 **What it reads**
 
 - `~/.claude/sessions/`: Claude Code's list of running sessions (each one's name, folder and status).
-- The transcripts in `~/.claude/projects/`. For the totals, it takes each model call's model, token counts and time, and nothing else. For a session without the mod, it reads the last 160 KB of its transcript to see its model, context size and current tool. For a workflow, it reads each agent's meta file for the agent's name.
+- The transcripts in `~/.claude/projects/`. For the totals, it takes each model call's model, token counts and time, and nothing else. For a session without the mod, it reads the last 160 KB of its transcript to see its model, context size, current tool and last few tool calls. For a workflow, it reads each agent's meta file for the agent's name and phase, and the script of a workflow its own session launches, for the name and phases its `meta` declares.
 - Its own files in `~/.claude/clawd-crew/`.
 
-What reaches the pane is session names, models, and a few words on what each is doing: a file name, a search pattern, a command's description, a subagent's task. It is shown in your pane and goes nowhere else.
+What reaches the pane is session names, models, workflow names, and a few words on what each is doing and has just done: a file name, a search pattern, a command's description, a subagent's task. It is shown in your pane and in the line under your prompt, and goes nowhere else.
 
 **What it writes**, all in `~/.claude/clawd-crew/`:
 
-- `live/<session id>.json`: each session's state, for the other sessions to show (status, model, tokens, cost, subagents and the latest limit readings).
+- `live/<session id>.json`: each session's state, for the other sessions to show (status, model, tokens, cost, the last five steps of it and of each subagent, its workflows' names and phases, and the latest limit readings).
 - `usage.json`: the totals, by quarter hour for the last week and by day, and which session is counting them.
 - `limits.json`: the best reading of the usage limits.
 - `asked.json`: when a session last asked for the limits, and whether the answer had them.
 - `settings.json`: your animation picks.
 
-Three preferences go in Claude Code's own plugin storage: whether the pane opens by itself, the drawing style, and whether you have asked for it in a terminal.
+Four preferences go in Claude Code's own plugin storage: whether the pane opens by itself, whether the status line shows, the drawing style, and whether you have asked for it in a terminal.
 
 **What it runs**: a few of the system's own programs, for what Claude Code's plugin API doesn't offer: a list of running processes, and reading files past the API's 4 MiB limit (transcripts run much longer). These are the only commands it runs:
 
@@ -133,7 +137,7 @@ Each is handed file paths and reads the files itself, and what it prints comes b
 
 **What it asks the model**: one tiny request, and only when it is needed. When no session has a reading of the usage limits, as on a first start, the session doing the counting sends Haiku a one-line request capped at one output token, and reads the limits from the answer as from any reply. The asking is noted in `asked.json`, and no session asks again within five hours, or within a week if the answer had no limits (as with an API key). It costs a few dozen input tokens, which show in `/cost`. Nothing else is sent to a model.
 
-**What it hooks**: Claude Code's events about each session (its start, attach and end; each turn and its steps; tool calls; subagents starting; compaction; usage), only to see what the session is doing. Every one of those hooks passes its event on unchanged and returns what Claude Code answers, so it changes no tool call, permission, agent or prompt. It answers just two things itself, both its own: the `/clawds` command, and the drawing of its own pane.
+**What it hooks**: Claude Code's events about each session (its start, attach and end; each turn and its steps; tool calls; subagents starting; compaction; usage), only to see what the session is doing. Every one of those hooks passes its event on unchanged and returns what Claude Code answers, so it changes no tool call, permission, agent or prompt. It answers just two things itself, both its own: the `/clawds` command, and the drawing of its own pane. Besides its pane it shows one line of its own under the prompt.
 
 **What it never does**: call a tool, start an agent, run a slash command, fetch anything from the network on its own, or write a build, start-up, settings or instructions file of any program. Its `settings.json` holds only its animation picks, in its own folder. It reads no credential: where the code says "token", it means the token counts of model calls. The engine tests in `tests/` stand in for Claude Code to check the mod, so they call tools, start agents and answer process calls themselves; Claude Code never loads them.
 
@@ -146,6 +150,7 @@ Each is handed file paths and reads the files itself, and what it prints comes b
 The ⚙ at the top right of the pane opens the settings, for every session:
 
 - **Opens by itself**: whether new and reopened sessions open the pane without being asked. Closing the pane closes it in that session only.
+- **Status line**: whether every session shows the crew's line under its prompt.
 - **Animations**: the animation each mood is drawn with, three moods a page.
 
 In the desktop app, each Clawd is drawn as small boxes of color by a module that runs on the app's side and steps the animation itself, so the pane's once-a-second redraws never restart it. `/clawds style svg` draws animated SVGs instead, which restart each time the pane redraws.
@@ -162,7 +167,7 @@ claude plugin test .
 
 `validate` reads the manifest and the hooks module as Claude Code will, and lists what the module hooks and calls (`claude plugin validate .` checks the marketplace manifest instead). `test` runs `tests/crew.test.ts` against Claude Code's own engine. Claude Code writes its plugin API's type declarations into `.claude-plugin/types/` whenever it loads the mod from your folder (git ignores them), and `tsconfig.json` builds on them, so an editor type-checks the code once the mod has loaded.
 
-To see every animation in a browser, serve the folder over HTTP (for example `python3 -m http.server`) and open `/preview/`; `/preview/pane.html` shows a sample pane, and `pane.html?sample=pane-settings.json` the settings.
+To see every animation in a browser, serve the folder over HTTP (for example `python3 -m http.server`) and open `/preview/`; `/preview/pane.html` shows a sample pane, `pane.html?sample=pane-detail.json` the same with a subagent's detail open, and `pane.html?sample=pane-settings.json` the settings.
 
 - `hooks/register.tsx`: the hooks: events, the once-a-second tick, the `/clawds` command and the pane drawing.
 - `hooks/crew.ts`: tracking this session, reading the others, and wording each row.

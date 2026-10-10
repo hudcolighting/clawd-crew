@@ -6,7 +6,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderElement, TurnUsage } from 'claude-code'
 
-import type { CrewChip, CrewCrowd, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
+import type { CrewChip, CrewCrowd, CrewLimit, CrewMember, CrewRun, CrewStyle, CrewTone, CrewTrend, CrewView } from '../types'
 import { COLUMNS, ICON_COLUMNS, ICON_ROWS, ROWS, cellsOf, iconCells } from './cells'
 import {
   type Io,
@@ -22,6 +22,7 @@ import {
   restore,
   retire,
   saveAnimations,
+  scriptMeta,
   setPaths,
   shareLimits,
   shouldAskLimits,
@@ -43,7 +44,7 @@ const BLIT_MS = 120
 const view = atom(
   { plugin: 'clawd-crew', key: 'view' } as const,
   { header: { limits: [], note: '', totals: [] }, groups: [], summary: '', style: 'pixels' } as CrewView,
-  { shape: 'groups-7' },
+  { shape: 'groups-8' },
 )
 
 const TONES: Record<CrewTone, string | undefined> = {
@@ -66,8 +67,17 @@ const RULE_ROWS = 0.125
 // after it, on the desktop; a blank line on the terminal. Phases that are
 // over and show none stay together.
 const PHASE_GAP_ROWS = 0.6
+// The space between two workflow runs, on the desktop; a blank line on the
+// terminal.
+const RUN_GAP_ROWS = 0.8
 // A workflow agent's Clawd, in cells across.
 const CHIP_ICON_CELLS = 6
+// A sparkline's bars, in eighths of a line, and how many quarter hours a bar
+// may take: the most bars the room allows.
+const SPARK = ' ▁▂▃▄▅▆▇█'
+// The space between two of its bars on the desktop, in cells.
+const BAR_GAP_CELLS = 0.25
+const SLOTS_PER_BAR = [1, 2, 3, 4, 6, 8, 12]
 // The empty part of a usage bar, and the rule under the header.
 const TRACK = '#3d3a36'
 // The moods the settings list, in order, each with a title and a word on
@@ -100,6 +110,10 @@ const MOODS_PER_PAGE = 3
 const PICK_CELLS = 10
 
 const sprites = new Map<string, string>()
+
+// A workflow agent's time and tokens, in the cells beside its toggle: the
+// unit goes before the figures do, its phase's line saying "tok".
+const fitFact = (fact: string, cells: number) => clip(fact.length > cells && fact.endsWith(' tok') ? fact.slice(0, -4) : fact, cells)
 
 // One SVG per mood and tooltip, made once, for the `svg` style.
 const spriteOf = (mood: string, tip: string) => {
@@ -148,6 +162,13 @@ let settingsPage = 0
 // Whether new and reopened sessions open the pane by themselves, as the
 // settings set it for every session (kept in the store as `hidden`).
 let opensItself = true
+// Whether every session pins a line of the crew under its prompt (kept in
+// the store as `status`), and the line this one pinned.
+let showsStatus = true
+let statusShown: string | undefined
+// The member or chip whose detail is open, in this pane.
+let expanded: string | undefined
+let latest: CrewView | undefined
 
 // Each Button is one lasting element, made once for each look, so it keeps
 // its press handle from drawing to drawing. The desktop holds a new drawing
@@ -166,13 +187,45 @@ let pressedAt = Number.NEGATIVE_INFINITY
 // Where the credit under the settings links.
 const MAKER_URL = 'https://github.com/hudcolighting'
 
+// The line pinned under the prompt: the crew, and each limit's share left,
+// with when it runs out where the pace says it will before its reset.
+const statusOf = (crew: CrewView) =>
+  crew.summary === ''
+    ? undefined
+    : ['Clawd Crew', crew.summary, ...crew.header.limits.map(limit => `${limit.label} ${limit.percent}${limit.pace ? `, ${limit.pace}` : ''}`)].join(' · ')
+
+const pinStatus = ($: EngineInterface) => {
+  const line = showsStatus && latest ? statusOf(latest) : undefined
+  if (line === statusShown) return
+  statusShown = line
+  $.ui.status(line)
+}
+
 // Builds the view and draws it again if anything it shows has changed.
 const refresh = async ($: EngineInterface, now: number) => {
-  const fresh: CrewView = { ...buildView(now, style), animations: picks, isSetting, settingsPage, opensItself }
+  const fresh: CrewView = { ...buildView(now, style, expanded), animations: picks, isSetting, settingsPage, opensItself, showsStatus, expanded }
+  latest = fresh
+  pinStatus($)
   const text = JSON.stringify(fresh)
   if (text === shown) return
   shown = text
   await update($, view, () => fresh)
+}
+
+// A Workflow call's run: its name, as the call's result gives it, and its
+// phases, as its script declares them, inline or kept where the result says.
+const noteLaunch = async ($: EngineInterface, io: Io, input: unknown, done: unknown) => {
+  try {
+    const result = ((done as { result?: unknown }).result ?? {}) as { runId?: unknown; workflowName?: unknown; scriptPath?: unknown }
+    if (typeof result.runId !== 'string' || result.runId === '') return
+    const inline = (input as { script?: unknown }).script
+    const script = typeof inline === 'string' ? inline : typeof result.scriptPath === 'string' ? await io.read(result.scriptPath).catch(() => '') : ''
+    const meta = scriptMeta(script)
+    const name = typeof result.workflowName === 'string' && result.workflowName ? result.workflowName : (meta.name ?? '')
+    track.launched(result.runId, name, meta.phases, await $.clock.now())
+  } catch (error) {
+    $.ui.log(`reading a workflow's launch failed: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+  }
 }
 
 // With no session holding the usage limits, as on a first start, the
@@ -223,6 +276,7 @@ const tick = async ($: EngineInterface, io: Io) => {
     if (ticks % 5 === 3) {
       picks = await loadAnimations(io)
       opensItself = (await $.store.get('hidden')) !== true
+      showsStatus = (await $.store.get('status')) !== false
     }
     if (ticks % 4 === 2) void peekPeers(io, now)
     if (ticks % 30 === 6 && isUsageLeader()) void askLimits($, io)
@@ -263,6 +317,7 @@ export const register: Register = on => {
     style = (await $.store.get('style')) === 'svg' ? 'svg' : 'pixels'
     await restore(io, await $.clock.now())
     opensItself = (await $.store.get('hidden')) !== true
+    showsStatus = (await $.store.get('status')) !== false
     picks = await loadAnimations(io)
     await $.command.register({
       name: 'clawds',
@@ -327,7 +382,9 @@ export const register: Register = on => {
     const id = e.tool_use_id ?? `${e.tool}:${Math.random()}`
     track.toolStarted(e.agentId, id, e.tool, e, await $.clock.now())
     try {
-      return await next(e)
+      const done = await next(e)
+      if (e.tool === 'Workflow') void noteLaunch($, ioOf($), e, done)
+      return done
     } finally {
       track.toolEnded(e.agentId, id, await $.clock.now())
     }
@@ -470,6 +527,36 @@ export const register: Register = on => {
         </Text>
       </Box>
     )
+    // The last day's cost as a sparkline, as many bars as the room takes (a
+    // quarter hour each, or a few together), the tallest a line high, then
+    // what it comes to.
+    const sparkline = (trend: CrewTrend) => {
+      const room = e.props.bodyColumns - labelCells - trend.text.length - 5
+      const per = SLOTS_PER_BAR.find(slots => trend.values.length / slots <= room) ?? SLOTS_PER_BAR.at(-1)!
+      const bars: number[] = []
+      for (let at = 0; at < trend.values.length; at += per) bars.push(trend.values.slice(at, at + per).reduce((sum, usd) => sum + usd, 0))
+      const most = Math.max(...bars)
+      // In eighths of a line; any use at all shows.
+      const eighths = bars.map(usd => (usd > 0 && most > 0 ? Math.max(1, Math.round((usd / most) * 8)) : 0))
+      const chart = isTerminal ? (
+        <Text color={TONES.work}>{eighths.map(level => SPARK[level]).join('')}</Text>
+      ) : (
+        <Box flexDirection="row" alignItems="flex-end" columnGap={BAR_GAP_CELLS} height={1} flexShrink={0}>
+          {eighths.map(level => (
+            <Box width={1 - BAR_GAP_CELLS} height={level > 0 ? level / 8 : 1 / 16} backgroundColor={level > 0 ? TONES.work : TRACK} />
+          ))}
+        </Box>
+      )
+      return (
+        <Box flexDirection="row" alignItems="flex-end" columnGap={1}>
+          {label(trend.label)}
+          {chart}
+          <Text dimColor wrap="truncate-end">
+            {trend.text}
+          </Text>
+        </Box>
+      )
+    }
     const header =
       crew.summary === '' ? (
         <Text dimColor wrap="truncate-end">
@@ -480,24 +567,35 @@ export const register: Register = on => {
           {limits.map(limit => {
             const color = TONES[limit.tone] ?? '#D97757'
             return (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                {label(limit.label)}
-                {bar(limit, color)}
-                <Box flexShrink={0}>
-                  <Text bold color={color}>
-                    {limit.percent}
-                  </Text>
+              <Box flexDirection="column">
+                <Box flexDirection="row" alignItems="center" columnGap={1}>
+                  {label(limit.label)}
+                  {bar(limit, color)}
+                  <Box flexShrink={0}>
+                    <Text bold color={color}>
+                      {limit.percent}
+                    </Text>
+                  </Box>
+                  {limit.resets !== '' && (
+                    <Text dimColor wrap="truncate-end">
+                      {`· ${limit.resets}`}
+                    </Text>
+                  )}
                 </Box>
-                {limit.resets !== '' && (
-                  <Text dimColor wrap="truncate-end">
-                    {`· ${limit.resets}`}
-                  </Text>
+                {limit.pace !== '' && (
+                  <Box flexDirection="row" columnGap={1}>
+                    <Box width={labelCells} flexShrink={0} />
+                    <Text color={TONES.wait} wrap="truncate-end">
+                      {limit.pace}
+                    </Text>
+                  </Box>
                 )}
               </Box>
             )
           })}
           {note !== '' && fact('Limits', note)}
           {totals.map(total => fact(total.label, total.text))}
+          {crew.header.trend && sparkline(crew.header.trend)}
           {fact('Crew', crew.summary)}
         </Box>
       )
@@ -506,13 +604,42 @@ export const register: Register = on => {
       const color = TONES[tone]
       return color ? <Text color={color}>●</Text> : <Text dimColor>●</Text>
     }
+    // A Clawd's detail opens and closes with the toggle beside it; one is
+    // open at a time.
+    const toggleDetail = async (key: string) => {
+      expanded = expanded === key ? undefined : key
+      await refresh($, await $.clock.now())
+    }
+    const detailToggle = (key: string) =>
+      button(`detail:${key}`, crew.expanded === key ? '▾' : '▸', { plain: true, dimColor: true }, () => toggleDetail(key))
+    const detailView = (lines: readonly string[]) => (
+      <Box flexDirection="column">
+        {lines.map(line => (
+          <Text dimColor wrap="wrap">
+            {line}
+          </Text>
+        ))}
+      </Box>
+    )
+    // A member's name, with the toggle of its detail at the end of the line.
+    const nameLine = (member: CrewMember) => (
+      <Box flexDirection="row" columnGap={1}>
+        <Box flexGrow={1} flexShrink={1}>
+          <Text bold={!member.isAgent} wrap="truncate-end">
+            {member.name}
+          </Text>
+        </Box>
+        {detailToggle(member.key)}
+      </Box>
+    )
     // A crowd of helpers: each phase and how its helpers are faring, then the
     // helpers in two columns, each its Clawd (or dot) beside its name, what
     // it is doing, and how long it has worked with the tokens it used.
     // A phase's line: its title, checked off in color once over, and how its
     // agents are faring, its time and its tokens, cut to the pane's width: a
     // long title gives way to the figures, down to 8 cells.
-    const phaseLine = (phase: CrewPhase, cells: number) => {
+    // A run's line reads the same, its name in the work color.
+    const phaseLine = (phase: { title: string; summary: string; tone: CrewTone }, cells: number) => {
       const color = TONES[phase.tone]
       const title = clip(phase.title, Math.max(8, cells - 1 - phase.summary.length))
       const room = cells - 1 - title.length
@@ -540,36 +667,60 @@ export const register: Register = on => {
       const lineCells = Math.max(8, e.props.bodyColumns - indent)
       const cells = Math.max(12, Math.floor(lineCells / 2))
       // An agent's lines, cut to fit its column with a cell to spare, so a
-      // long status never runs under the Clawd beside it.
+      // long status never runs under the Clawd beside it; its last line keeps
+      // two cells more for the toggle of its detail.
       const textCells = Math.max(4, cells - iconCells - 2)
-      return (
-        <Box flexDirection="column" marginLeft={indent}>
-          {crowd.phases.map((phase, index) => {
-            const previous = crowd.phases[index - 1]
-            const isSpaced = previous !== undefined && (phase.chips.length > 0 || previous.chips.length > 0)
-            return (
-              <Box flexDirection="column">
-                {isSpaced && <Box height={isTerminal ? 1 : PHASE_GAP_ROWS} />}
-                {phaseLine(phase, lineCells)}
-                <Box flexDirection="row" flexWrap="wrap">
-                  {phase.chips.map(chip => (
-                    <Box flexDirection="row" width={cells} flexShrink={0} columnGap={1} overflow="hidden">
-                      {icon(chip)}
-                      <Box flexDirection="column" width={textCells} flexShrink={0} overflow="hidden">
-                        <Text bold wrap="truncate-end">
-                          {clip(chip.name, textCells)}
-                        </Text>
-                        {toned(chip.tone, clip(chip.doing, textCells))}
-                        <Text dimColor wrap="truncate-end">
-                          {clip(chip.fact, textCells)}
-                        </Text>
+      const runView = (run: CrewRun) =>
+        run.phases.map((phase, index) => {
+          const previous = run.phases[index - 1]
+          const isSpaced = previous !== undefined && (phase.chips.length > 0 || previous.chips.length > 0)
+          // A chip's detail opens under its phase's chips, the crowd's width.
+          const opened = phase.chips.find(chip => chip.detail !== undefined)
+          return (
+            <Box flexDirection="column">
+              {isSpaced && <Box height={isTerminal ? 1 : PHASE_GAP_ROWS} />}
+              {phaseLine(phase, lineCells)}
+              <Box flexDirection="row" flexWrap="wrap">
+                {phase.chips.map(chip => (
+                  <Box flexDirection="row" width={cells} flexShrink={0} columnGap={1} overflow="hidden">
+                    {icon(chip)}
+                    <Box flexDirection="column" width={textCells} flexShrink={0} overflow="hidden">
+                      <Text bold wrap="truncate-end">
+                        {clip(chip.name, textCells)}
+                      </Text>
+                      {toned(chip.tone, clip(chip.doing, textCells))}
+                      <Box flexDirection="row" columnGap={1}>
+                        <Box flexGrow={1} flexShrink={1}>
+                          <Text dimColor wrap="truncate-end">
+                            {fitFact(chip.fact, Math.max(4, textCells - 2))}
+                          </Text>
+                        </Box>
+                        {detailToggle(chip.key)}
                       </Box>
                     </Box>
-                  ))}
-                </Box>
+                  </Box>
+                ))}
               </Box>
-            )
-          })}
+              {opened?.detail && (
+                <Box flexDirection="column" marginLeft={1}>
+                  <Text bold wrap="truncate-end">
+                    {opened.name}
+                  </Text>
+                  {detailView(opened.detail)}
+                </Box>
+              )}
+            </Box>
+          )
+        })
+      return (
+        <Box flexDirection="column" marginLeft={indent}>
+          {crowd.runs.map((run, index) => (
+            <Box flexDirection="column">
+              {index > 0 && <Box height={isTerminal ? 1 : RUN_GAP_ROWS} />}
+              {run.title !== '' && phaseLine({ title: run.title, summary: run.summary, tone: 'work' }, lineCells)}
+              {runView(run)}
+            </Box>
+          ))}
           {crowd.more > 0 && (
             <Text dimColor wrap="truncate-end">
               {`+${crowd.more} more`}
@@ -613,6 +764,12 @@ export const register: Register = on => {
       if (isOn) await $.store.set('wanted', true)
       await refresh($, await $.clock.now())
     }
+    // Whether every session pins the crew's line under its prompt.
+    const setShowsStatus = async (isOn: boolean) => {
+      showsStatus = isOn
+      await $.store.set('status', isOn)
+      await refresh($, await $.clock.now())
+    }
     const turn = async (by: number) => {
       settingsPage = Math.min(Math.max(settingsPage + by, 0), pages - 1)
       await refresh($, await $.clock.now())
@@ -638,6 +795,18 @@ export const register: Register = on => {
           </Box>
           {button('opens-on', 'On', crew.opensItself !== false ? { variant: 'primary' } : { dimColor: true }, () => setOpensItself(true))}
           {button('opens-off', 'Off', crew.opensItself === false ? { variant: 'primary' } : { dimColor: true }, () => setOpensItself(false))}
+        </Box>
+        <Box flexDirection="row" columnGap={1} marginTop={1}>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+            <Text bold wrap="truncate-end">
+              Status line
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              The crew under every prompt
+            </Text>
+          </Box>
+          {button('status-on', 'On', crew.showsStatus !== false ? { variant: 'primary' } : { dimColor: true }, () => setShowsStatus(true))}
+          {button('status-off', 'Off', crew.showsStatus === false ? { variant: 'primary' } : { dimColor: true }, () => setShowsStatus(false))}
         </Box>
         <Box flexDirection="row" columnGap={1} marginTop={1}>
           <Box flexGrow={1} flexShrink={1}>
@@ -706,15 +875,14 @@ export const register: Register = on => {
           <Box flexDirection="row">
             <Raster key={key} columns={COLUMNS} rows={ROWS} cells={cellsOf(mood).cells[mounted.get(key)!.frame]!} />
             <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={1}>
-              <Text bold={!member.isAgent} wrap="truncate-end">
-                {member.name}
-              </Text>
+              {nameLine(member)}
               {toned(member.tone, member.doing)}
               {member.facts.map(fact => (
                 <Text dimColor wrap="truncate-end">
                   {fact}
                 </Text>
               ))}
+              {member.detail && detailView(member.detail)}
             </Box>
           </Box>
         )
@@ -770,15 +938,14 @@ export const register: Register = on => {
       <Box flexDirection="row">
         {sprite(member)}
         <Box flexDirection="column" flexGrow={1} flexShrink={1} marginLeft={1}>
-          <Text bold={!member.isAgent} wrap="truncate-end">
-            {member.name}
-          </Text>
+          {nameLine(member)}
           {toned(member.tone, member.doing)}
           {member.facts.map(fact => (
             <Text dimColor wrap="truncate-end">
               {fact}
             </Text>
           ))}
+          {member.detail && detailView(member.detail)}
         </Box>
       </Box>
     )

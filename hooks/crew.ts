@@ -6,8 +6,8 @@
 
 import type { AgentInfo, SessionRateLimit, TurnStepChunk, TurnUsage } from 'claude-code'
 
-import type { CrewChip, CrewCrowd, CrewGroup, CrewHeader, CrewLimit, CrewMember, CrewPhase, CrewStyle, CrewTone, CrewView } from '../types'
-import { type Totals, isTotalReady, isUsageReady, setUsagePaths, usageSince, usageTotal } from './usage'
+import type { CrewChip, CrewCrowd, CrewGroup, CrewHeader, CrewLimit, CrewMember, CrewPhase, CrewRun, CrewStyle, CrewTone, CrewView } from '../types'
+import { SLOT_MS, type Totals, isTotalReady, isUsageReady, setUsagePaths, usageSince, usageTotal, usageTrend } from './usage'
 import { type Doing, type Mood, briefly, clip, describeTool, doingLine, elapsed, isWorkMood, modelName, money, roughly, shortCount } from './words'
 
 // The file system and processes, as the hooks module reaches them for us:
@@ -51,6 +51,8 @@ const NAME_TRIES = 10
 const NAME_WAIT_MS = 30_000
 const NAMING_FORGET_MS = 60 * 60_000
 const RUN_FOLDERS_MS = 5_000
+// The steps a Clawd's detail lists, the latest first.
+const RECENT_STEPS = 5
 
 // ---------------------------------------------------------------- paths --
 
@@ -99,7 +101,21 @@ type Loop = {
   tokens: number
   toolCalls: number
   lastAt: number
+  // Its last few tool calls, as their lines read, oldest first.
+  recent: Step[]
 }
+
+// A step a Clawd took: when, and its line ("Reading layout.css").
+export type Step = [at: number, text: string]
+
+const isStep = (value: unknown): value is Step =>
+  Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'string'
+
+const stepsIn = (value: unknown) => (Array.isArray(value) ? value.filter(isStep).slice(-RECENT_STEPS) : [])
+
+// A workflow run as this session follows it: the name its script gave it,
+// the phases its script declares, and when it was launched.
+type Run = { name: string; phases?: string[]; startedAt: number }
 
 // A workflow phase as this session follows it: how each of its agents stands
 // (with stand-ins for ones a reload left only counted), when it began and
@@ -135,7 +151,7 @@ type Helper = {
 
 const THINKING: Doing = { mood: 'thinking', detail: '' }
 
-const newLoop = (): Loop => ({ doing: THINKING, tools: new Map(), stepping: 0, output: 0, tokens: 0, toolCalls: 0, lastAt: 0 })
+const newLoop = (): Loop => ({ doing: THINKING, tools: new Map(), stepping: 0, output: 0, tokens: 0, toolCalls: 0, lastAt: 0, recent: [] })
 
 export const me = {
   sessionId: '',
@@ -156,8 +172,9 @@ export const me = {
   // when a model call of this session last came back.
   limits: [] as Limit[],
   calledAt: 0,
-  // The phases of its workflows, by `<run>:<title>`.
+  // The phases of its workflows, by `<run>:<title>`, and its runs, by id.
   phases: new Map<string, Phase>(),
+  runs: new Map<string, Run>(),
   restoredBusySince: undefined as number | undefined,
   isReconciled: false,
 }
@@ -216,6 +233,7 @@ export const track = {
     me.contextPercent = undefined
     me.costUsd = undefined
     me.phases.clear()
+    me.runs.clear()
   },
 
   turnStarted(now: number) {
@@ -286,6 +304,7 @@ export const track = {
     loop.toolCalls += 1
     loop.lastAt = now
     loop.doing = doing
+    loop.recent = [...loop.recent, [now, doingLine(doing)] as Step].slice(-RECENT_STEPS)
     if (agentId !== undefined) helperOf(agentId, now)
   },
 
@@ -308,7 +327,17 @@ export const track = {
     helper.status = 'running'
     helper.startedAt = now
     helper.endedAt = undefined
-    if (run) helper.run = run
+    if (run) {
+      helper.run = run
+      if (!me.runs.has(run)) me.runs.set(run, { name: '', startedAt: now })
+    }
+  },
+
+  // A Workflow call launched a run: its name, and the phases its script
+  // declares, when they could be read.
+  launched(run: string, name: string, phases: string[] | undefined, now: number) {
+    const held = me.runs.get(run)
+    me.runs.set(run, { name: name || held?.name || '', phases: phases && phases.length > 0 ? phases : held?.phases, startedAt: held?.startedAt ?? now })
   },
 
   turnCompleted(agentId: string | undefined, reason: string, usage: TurnUsage | undefined, now: number) {
@@ -469,6 +498,10 @@ const sweepRuns = (now: number) => {
     const run = runs.get(phase.run)
     if (run && !run.isWorking && now - run.lastAt > RUN_LINGER_MS) me.phases.delete(key)
   }
+  // A run's name goes with the last of its phases and agents.
+  const held = new Set([...me.phases.values()].map(phase => phase.run))
+  for (const helper of me.helpers.values()) if (helper.run) held.add(helper.run)
+  for (const [id, run] of me.runs) if (!held.has(id) && now - run.startedAt > RUN_LINGER_MS) me.runs.delete(id)
 }
 
 const isShown = (helper: Helper, now: number) => {
@@ -526,7 +559,25 @@ export type HelperSnap = {
   context?: number
   output?: number
   tokens?: number
+  recent?: Step[]
 }
+
+// A workflow run as a session publishes it: its name, the phases its script
+// declares, and when it was launched.
+export type RunSnap = { run: string; name: string; phases?: string[]; startedAt: number }
+
+const isRunSnap = (value: unknown): value is RunSnap => {
+  if (value === null || typeof value !== 'object') return false
+  const run = value as RunSnap
+  return (
+    typeof run.run === 'string' &&
+    typeof run.name === 'string' &&
+    typeof run.startedAt === 'number' &&
+    (run.phases === undefined || (Array.isArray(run.phases) && run.phases.every(title => typeof title === 'string')))
+  )
+}
+
+const runsIn = (value: unknown) => (Array.isArray(value) ? value.filter(isRunSnap) : [])
 
 export type SessionSnap = {
   v: 1
@@ -543,6 +594,9 @@ export type SessionSnap = {
   limits?: Limit[]
   helpers: HelperSnap[]
   phases?: PhaseSnap[]
+  runs?: RunSnap[]
+  // Its own last few steps.
+  recent?: Step[]
   updatedAt: number
   ended?: boolean
 }
@@ -624,6 +678,7 @@ export const selfSnap = (now: number): SessionSnap => {
         context: loop?.context,
         output: loop?.output || undefined,
         tokens: loop?.tokens || undefined,
+        recent: loop && loop.recent.length > 0 ? loop.recent : undefined,
       }
     })
   return {
@@ -641,6 +696,8 @@ export const selfSnap = (now: number): SessionSnap => {
     limits: me.limits.length > 0 ? me.limits : undefined,
     helpers,
     phases: me.phases.size > 0 ? phaseSnaps(now) : undefined,
+    runs: me.runs.size > 0 ? [...me.runs].map(([run, held]): RunSnap => ({ run, ...held })) : undefined,
+    recent: me.main.recent.length > 0 ? me.main.recent : undefined,
     updatedAt: now,
   }
 }
@@ -669,6 +726,8 @@ export const restore = async (io: Io, now: number) => {
     me.model ??= snap.model
     me.costUsd ??= snap.costUsd
     if (isWorkMood(snap.mood)) me.restoredBusySince = snap.since
+    if (me.main.recent.length === 0) me.main.recent = stepsIn(snap.recent)
+    for (const kept of runsIn(snap.runs)) if (!me.runs.has(kept.run)) me.runs.set(kept.run, { name: kept.name, phases: kept.phases, startedAt: kept.startedAt })
     for (const kept of snap.helpers) {
       if (me.helpers.has(kept.id)) continue
       const isOver = kept.endedAt !== undefined
@@ -691,6 +750,7 @@ export const restore = async (io: Io, now: number) => {
       loop.tokens = kept.tokens ?? 0
       loop.context = kept.context
       loop.model = kept.model
+      loop.recent = stepsIn(kept.recent)
       // Its step or tool call under way, if any, began before this load.
       loop.lastAt = now
     }
@@ -728,6 +788,47 @@ export const retire = async (io: Io, sessionId: string, now: number) => {
   if (!sessionId || !where.config) return
   lastPublished = ''
   await io.write(liveFileOf(sessionId), JSON.stringify({ v: 1, sessionId, ended: true, updatedAt: now }))
+}
+
+// --------------------------------------------------- workflow scripts --
+
+// The text from an opening bracket to the one that closes it, strings
+// skipped; empty when it does not close.
+const balanced = (text: string, from: number) => {
+  if (from < 0) return ''
+  let depth = 0
+  let quote = ''
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]
+    if (quote) {
+      if (c === '\\') i += 1
+      else if (c === quote) quote = ''
+    } else if (c === '"' || c === "'" || c === '`') quote = c
+    else if (c === '{' || c === '[') depth += 1
+    else if (c === '}' || c === ']') {
+      depth -= 1
+      if (depth === 0) return text.slice(from, i + 1)
+    }
+  }
+  return ''
+}
+
+const QUOTED = String.raw`(['"\`])((?:\\.|(?!\1)[^\\])*)\1`
+const unquoted = (text: string) => text.replace(/\\(.)/g, '$1')
+
+// The name and the phase titles a workflow script's `meta` declares: a pure
+// literal at its top, `export const meta = { name, description, phases }`.
+export const scriptMeta = (script: string): { name?: string; phases?: string[] } => {
+  const at = script.search(/export\s+const\s+meta\s*=/)
+  if (at < 0) return {}
+  const meta = balanced(script, script.indexOf('{', at))
+  const name = new RegExp(String.raw`\bname\s*:\s*${QUOTED}`).exec(meta)?.[2]
+  const list = meta.search(/\bphases\s*:\s*\[/)
+  const phases = list < 0 ? [] : [...balanced(meta, meta.indexOf('[', list)).matchAll(new RegExp(String.raw`\btitle\s*:\s*${QUOTED}`, 'g'))]
+  return {
+    ...(name === undefined ? {} : { name: unquoted(name) }),
+    ...(phases.length > 0 ? { phases: phases.map(match => unquoted(match[2] ?? '')) } : {}),
+  }
 }
 
 // ------------------------------------------------------- usage limits --
@@ -950,6 +1051,7 @@ type Peek = {
   context?: number
   output?: number
   isFinished: boolean
+  recent?: Step[]
 }
 
 type Trail = { id: string; type: string; label: string; phase?: string; run?: string; path: string; startedAt: number; writtenAt: number }
@@ -964,13 +1066,15 @@ let isPeeking = false
 
 type Line = {
   type?: string
+  timestamp?: string
   message?: { model?: string; usage?: Record<string, number>; content?: unknown }
 }
 
 type Block = { type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string }
 
 // What the last lines of a transcript say: the model, the context the last
-// response was answered over, and what the loop is doing right now.
+// response was answered over, what the loop is doing right now, and its last
+// few tool calls.
 export const parseTail = (text: string) => {
   const lines = text.split('\n')
   let model: string | undefined
@@ -980,6 +1084,7 @@ export const parseTail = (text: string) => {
   let isFinished = false
   let isDecided = false
   const answered = new Set<string>()
+  const recent: Step[] = []
   for (let i = lines.length - 1; i >= 0; i--) {
     const raw = lines[i]!.trim()
     if (!raw.startsWith('{')) continue
@@ -993,6 +1098,11 @@ export const parseTail = (text: string) => {
     const blocks = (Array.isArray(message?.content) ? message.content : []) as Block[]
     if (row.type === 'assistant' && message) {
       if (!model && typeof message.model === 'string' && !message.model.startsWith('<')) model = message.model
+      const at = Date.parse(row.timestamp ?? '')
+      for (const block of [...blocks].reverse()) {
+        if (recent.length >= RECENT_STEPS || block.type !== 'tool_use' || !block.name || block.name === 'SubagentHandback') continue
+        recent.push([Number.isFinite(at) ? at : 0, doingLine(describeTool(block.name, block.input))])
+      }
       const usage = message.usage
       if (context === undefined && usage) {
         context = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
@@ -1017,9 +1127,9 @@ export const parseTail = (text: string) => {
         doing = THINKING
       }
     }
-    if (isDecided && model && context !== undefined) break
+    if (isDecided && model && context !== undefined && recent.length >= RECENT_STEPS) break
   }
-  return { model, context, output, doing, isFinished }
+  return { model, context, output, doing, isFinished, recent: recent.reverse() }
 }
 
 const quote = (path: string) => `'${path.replace(/'/g, "''")}'`
@@ -1323,6 +1433,8 @@ type Row = {
   source: string
   helpers: HelperSnap[]
   phases: PhaseSnap[]
+  runs: RunSnap[]
+  recent: Step[]
 }
 
 const folderName = (cwd: string) => cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd
@@ -1382,6 +1494,8 @@ const rowOfSnap = (entry: Entry | undefined, snap: SessionSnap, isSelf: boolean,
           .map(helper => named(snap.sessionId, helper))
           .filter(helper => !needsMeta(helper) || helper.endedAt !== undefined || !isNamePending(snap.sessionId, helper.id, now)),
     phases: Array.isArray(snap.phases) ? snap.phases.filter(isPhaseSnap) : [],
+    runs: runsIn(snap.runs),
+    recent: stepsIn(snap.recent),
   }
 }
 
@@ -1396,7 +1510,17 @@ const rowOfPeek = (entry: Entry, now: number): Row => {
     .map((trail): HelperSnap | undefined => {
       const seen = peeks.get(trail.path)
       const isQuiet = now - trail.writtenAt > 8_000
-      const base = { id: trail.id, type: trail.type, label: trail.label, phase: trail.phase, run: trail.run, model: seen?.model, startedAt: trail.startedAt, context: seen?.context }
+      const base = {
+        id: trail.id,
+        type: trail.type,
+        label: trail.label,
+        phase: trail.phase,
+        run: trail.run,
+        model: seen?.model,
+        startedAt: trail.startedAt,
+        context: seen?.context,
+        recent: seen?.recent,
+      }
       if (seen?.isFinished && isQuiet) {
         if (now - trail.writtenAt > HELPER_LINGER_MS) return undefined
         return { ...base, mood: 'done', detail: 'Finished', endedAt: trail.writtenAt }
@@ -1418,6 +1542,8 @@ const rowOfPeek = (entry: Entry, now: number): Row => {
     source: peek ? 'transcript' : 'registry',
     helpers,
     phases: [],
+    runs: [],
+    recent: peek?.recent ?? [],
   }
 }
 
@@ -1513,10 +1639,44 @@ const limitLabel = (kind: string) => {
 
 const limitTone = (left: number): CrewTone => (left > 50 ? 'done' : left > 20 ? 'wait' : 'error')
 
+const HOUR_MS = 60 * 60_000
+
+// How long each window lasts, and how far back its recent pace is taken.
+const WINDOWS: readonly (readonly [kind: string, lengthMs: number, paceMs: number])[] = [
+  ['five_hour', 5 * HOUR_MS, HOUR_MS],
+  ['seven_day', WEEK_MS, DAY_MS],
+]
+// A window this young has too little use behind it to tell a pace from.
+const PACE_AFTER_MS = 15 * 60_000
+
+// When a window runs out at the pace of its recent use, if that comes before
+// it resets. The share it has used per dollar the transcripts show since it
+// opened, at the dollars of the last hour (the last day, for a week), or its
+// pace since it opened while the totals are being counted. Recent use the
+// transcripts do not see (claude.ai's) is missed; earlier use they do not see
+// makes each dollar count for more.
+const runsOutAt = (limit: Limit, now: number) => {
+  const window = WINDOWS.find(([kind]) => limit.kind === kind || limit.kind.startsWith(`${kind}_`))
+  if (!window || limit.resetsAt === undefined || limit.resetsAt <= now || limit.used <= 0 || limit.used >= 100) return undefined
+  const [, length, span] = window
+  const opened = limit.resetsAt - length
+  if (now - opened < PACE_AFTER_MS) return undefined
+  let perMs = limit.used / (now - opened)
+  const spent = isUsageReady() ? usageSince(opened).usd : 0
+  if (spent > 0) {
+    const from = Math.floor((now - Math.min(span, now - opened)) / SLOT_MS) * SLOT_MS
+    perMs = (limit.used / spent) * (usageSince(from).usd / (now - from))
+  }
+  if (perMs <= 0) return undefined
+  const at = now + (100 - limit.used) / perMs
+  return at < limit.resetsAt ? at : undefined
+}
+
 const crewLimit = (limit: Limit, now: number): CrewLimit => {
   // Past its reset the window is empty until the next prompt starts one.
   const isOver = limit.resetsAt !== undefined && limit.resetsAt <= now
   const left = isOver ? 100 : Math.min(100, Math.max(0, 100 - limit.used))
+  const out = runsOutAt(limit, now)
   return {
     key: limit.kind,
     label: limitLabel(limit.kind),
@@ -1524,6 +1684,7 @@ const crewLimit = (limit: Limit, now: number): CrewLimit => {
     percent: `${Math.floor(left)}% left`,
     resets: isOver ? 'fresh window' : limit.resetsAt !== undefined ? `resets in ${roughly(limit.resetsAt - now)}` : '',
     tone: limitTone(left),
+    pace: out === undefined ? '' : `out in ${roughly(out - now)} at this pace`,
   }
 }
 
@@ -1539,8 +1700,12 @@ const totalsLine = ({ tokensIn, tokensOut, usd }: Totals, isReady: boolean) =>
         .join(' · ') || 'nothing yet'
     : 'counting…'
 
+// The quarter hours of a day.
+const TREND_SLOTS = DAY_MS / SLOT_MS
+
 // The lines above the Clawds: the account's usage limits, then what every
-// session used today, this week and in all, closed ones included.
+// session used today, this week and in all, closed ones included, and how
+// the last day went.
 const headerOf = (rows: readonly Row[], now: number): CrewHeader => {
   const best = bestLimits(readings())
   const limits = [...best]
@@ -1549,6 +1714,9 @@ const headerOf = (rows: readonly Row[], now: number): CrewHeader => {
   const week = usageSince(startOfWeek(best, now))
   // Off a subscription no reading ever comes: no promise of one after a reply.
   const hasReplied = week.tokensOut > 0 || rows.some(row => (row.output ?? 0) > 0)
+  // The last day's cost, a quarter hour a bar, once counted.
+  const values = usageTrend(now, TREND_SLOTS).map(usd => Math.round(usd * 1e4) / 1e4)
+  const spent = values.reduce((sum, usd) => sum + usd, 0)
   return {
     limits,
     note: limits.length === 0 && !hasReplied ? 'shown after the first reply' : '',
@@ -1557,6 +1725,7 @@ const headerOf = (rows: readonly Row[], now: number): CrewHeader => {
       { label: 'Week', text: totalsLine(week, isUsageReady()) },
       { label: 'Total', text: totalsLine(usageTotal(), isTotalReady()) },
     ],
+    ...(isUsageReady() && spent > 0 ? { trend: { label: '24h', values, text: money(spent) } } : {}),
   }
 }
 
@@ -1573,9 +1742,11 @@ const pickHelpers = (helpers: readonly HelperSnap[], max: number) => {
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 // A phase's helpers, and the phase as its session published it, if it did.
-type PhaseGroup = { key: string; title: string; snap?: PhaseSnap; helpers: HelperSnap[]; startedAt: number }
+type PhaseGroup = { key: string; run: string; title: string; snap?: PhaseSnap; helpers: HelperSnap[]; startedAt: number }
 
-const groupTitle = (helper: HelperSnap) => helper.phase || (isWorkflowHelper(helper) ? 'Workflow' : 'Helpers')
+// A run's agents of no phase are its agents; a workflow agent of no known run
+// is the workflow's.
+const groupTitle = (helper: HelperSnap) => helper.phase || (helper.run ? 'Agents' : isWorkflowHelper(helper) ? 'Workflow' : 'Helpers')
 
 // Its phase of its run: each run's phases apart, however alike their titles,
 // and a run without phases one group of its own.
@@ -1584,13 +1755,20 @@ const groupKey = (helper: HelperSnap) => phaseKey(helper.run, helper.phase) ?? (
 // A phase's line: how many of its agents are at work, need you, are done or
 // failed, how long it has run and the tokens it used. A phase that is over
 // is checked off (crossed, with errors) and shows no agents of its own.
-const phaseView = (row: Row, group: PhaseGroup, now: number): CrewPhase => {
-  const { snap, helpers } = group
+const phaseCounts = ({ snap, helpers }: PhaseGroup) => {
   const count = (test: (helper: HelperSnap) => boolean) => helpers.filter(test).length
   const waiting = count(helper => helper.mood === 'waiting')
-  const working = snap ? Math.max(0, snap.working - waiting) : count(helper => helper.endedAt === undefined && helper.mood !== 'waiting')
-  const done = snap ? snap.done : count(helper => helper.endedAt !== undefined && helper.mood !== 'error')
-  const failed = snap ? snap.failed : count(helper => helper.mood === 'error')
+  return {
+    waiting,
+    working: snap ? Math.max(0, snap.working - waiting) : count(helper => helper.endedAt === undefined && helper.mood !== 'waiting'),
+    done: snap ? snap.done : count(helper => helper.endedAt !== undefined && helper.mood !== 'error'),
+    failed: snap ? snap.failed : count(helper => helper.mood === 'error'),
+  }
+}
+
+const phaseView = (row: Row, group: PhaseGroup, now: number): CrewPhase => {
+  const { snap, helpers } = group
+  const { waiting, working, done, failed } = phaseCounts(group)
   const isOver = snap?.endedAt !== undefined
   const ends = helpers.map(helper => helper.endedAt ?? now)
   const time = snap ? (snap.endedAt ?? now) - snap.startedAt : Math.max(...ends) - group.startedAt
@@ -1627,28 +1805,97 @@ const phaseView = (row: Row, group: PhaseGroup, now: number): CrewPhase => {
   }
 }
 
-// A session's workflow agents by phase, the phases in the order they began:
-// the ones the session published, and any its agents name that it did not (a
-// session on an older build); each agent a tiny Clawd beside its name, what
-// it is doing, and how long it has worked with the tokens it used.
+// A workflow run over its phases: its name, the furthest of the phases its
+// script declares that has begun, and how many of the agents started so far
+// have finished.
+const runView = (row: Row, run: string, groups: readonly PhaseGroup[], now: number): CrewRun => {
+  const held = row.runs.find(info => info.run === run)
+  let finished = 0
+  let total = 0
+  for (const group of groups) {
+    const { waiting, working, done, failed } = phaseCounts(group)
+    finished += done + failed
+    total += done + failed + working + waiting
+  }
+  const declared = held?.phases ?? []
+  const begun = groups.filter(group => group.snap || group.helpers.some(helper => helper.phase !== undefined))
+  const reached = Math.max(0, ...begun.map(group => declared.indexOf(group.title) + 1)) || Math.min(begun.length, declared.length)
+  return {
+    key: `${row.key}:run:${run}`,
+    title: run ? held?.name || 'Workflow' : '',
+    summary: [declared.length > 0 && reached > 0 ? `phase ${reached} of ${declared.length}` : '', total > 0 ? `${finished} of ${total} agents done` : '']
+      .filter(Boolean)
+      .join(' · '),
+    phases: groups.map(group => phaseView(row, group, now)),
+  }
+}
+
+// A session's workflow agents by run and phase, the runs and their phases in
+// the order they began: the phases the session published, and any its agents
+// name that it did not (a session on an older build); each agent a tiny
+// Clawd beside its name, what it is doing, and how long it has worked with
+// the tokens it used.
 const crowdOf = (row: Row, helpers: readonly HelperSnap[], now: number): CrewCrowd => {
   const shown = pickHelpers(helpers, MAX_CHIPS)
   const groups = new Map<string, PhaseGroup>()
-  for (const snap of row.phases) groups.set(snap.key, { key: snap.key, title: snap.title, snap, helpers: [], startedAt: snap.startedAt })
+  for (const snap of row.phases) {
+    groups.set(snap.key, { key: snap.key, run: typeof snap.run === 'string' ? snap.run : '', title: snap.title, snap, helpers: [], startedAt: snap.startedAt })
+  }
   for (const helper of shown) {
     const key = groupKey(helper)
-    const group = groups.get(key) ?? { key, title: groupTitle(helper), helpers: [], startedAt: helper.startedAt }
+    const group = groups.get(key) ?? { key, run: helper.run ?? '', title: groupTitle(helper), helpers: [], startedAt: helper.startedAt }
     group.helpers.push(helper)
     group.startedAt = Math.min(group.startedAt, helper.startedAt)
     groups.set(key, group)
   }
+  const runs = new Map<string, PhaseGroup[]>()
+  for (const group of [...groups.values()].sort((a, b) => a.startedAt - b.startedAt)) runs.set(group.run, [...(runs.get(group.run) ?? []), group])
   return {
-    phases: [...groups.values()].sort((a, b) => a.startedAt - b.startedAt).map(group => phaseView(row, group, now)),
+    runs: [...runs].map(([run, phases]) => runView(row, run, phases, now)),
     more: helpers.length - shown.length,
   }
 }
 
-export const buildView = (now: number, style: CrewStyle): CrewView => {
+// A Clawd's last few steps, the latest first, with how long ago each was.
+const stepLines = (recent: readonly Step[], now: number) =>
+  recent.length === 0
+    ? ['No steps seen yet']
+    : ['Last steps:', ...[...recent].reverse().map(([at, text]) => `${at > 0 ? `${briefly(now - at)} ago` : 'earlier'} · ${text}`)]
+
+// What a session's detail adds to its row: where it works, how long it has
+// been open, and its last few steps.
+const sessionDetail = (row: Row, now: number) =>
+  [row.cwd ? `Folder: ${row.cwd}` : '', row.startedAt > 0 ? `Open for ${roughly(now - row.startedAt)}` : '', ...stepLines(row.recent, now)].filter(Boolean)
+
+// What a helper's detail adds to its row: its whole task, its type, the
+// tokens it used in all, and its last few steps. A workflow agent's, whose
+// chip says less, its workflow and phase, its model and time, and its
+// context and output too.
+const helperDetail = (row: Row, helper: HelperSnap, now: number) => {
+  const tokens = helper.tokens ? `${shortCount(helper.tokens)} tok in all` : ''
+  if (!isWorkflowHelper(helper)) return [helper.label ? `Task: ${helper.label}` : '', `Type: ${helper.type || 'helper'}`, tokens, ...stepLines(helper.recent ?? [], now)].filter(Boolean)
+  const run = helper.run === undefined ? undefined : row.runs.find(info => info.run === helper.run)
+  const time = helper.endedAt !== undefined && helper.endedAt > 0 ? `took ${elapsed(helper.endedAt - helper.startedAt)}` : `started ${elapsed(now - helper.startedAt)} ago`
+  return [
+    helper.label ? `Task: ${helper.label}` : '',
+    [`Workflow: ${run?.name || 'unnamed'}`, helper.phase ? `phase ${helper.phase}` : ''].filter(Boolean).join(' · '),
+    [modelName(helper.model), time].filter(Boolean).join(' · '),
+    [tokens, helper.output ? `${shortCount(helper.output)} out` : '', helper.context !== undefined ? `${shortCount(helper.context)} ctx` : ''].filter(Boolean).join(' · '),
+    ...stepLines(helper.recent ?? [], now),
+  ].filter(Boolean)
+}
+
+// The opened member's detail, on whichever of the group's rows or chips it is.
+const openDetail = (group: CrewGroup, row: Row, expanded: string, now: number) => {
+  if (expanded !== row.key && !expanded.startsWith(`${row.key}:`)) return
+  const helper = row.helpers.find(held => `${row.key}:${held.id}` === expanded)
+  const detail = expanded === row.key ? sessionDetail(row, now) : helper ? helperDetail(row, helper, now) : undefined
+  if (!detail) return
+  for (const member of [group.head, ...group.helpers]) if (member.key === expanded) member.detail = detail
+  for (const run of group.crowd?.runs ?? []) for (const phase of run.phases) for (const chip of phase.chips) if (chip.key === expanded) chip.detail = detail
+}
+
+export const buildView = (now: number, style: CrewStyle, expanded?: string): CrewView => {
   const rows: Row[] = []
   if (me.sessionId) rows.push(rowOfSnap(registry.get(me.sessionId), selfSnap(now), true, now))
   const others: Row[] = []
@@ -1672,12 +1919,14 @@ export const buildView = (now: number, style: CrewStyle): CrewView => {
     const regular = row.helpers.filter(helper => !isWorkflowHelper(helper))
     const workflow = row.helpers.filter(isWorkflowHelper)
     const isConducting = workflow.some(helper => helper.endedAt === undefined) || row.phases.some(phase => phase.endedAt === undefined)
-    groups.push({
+    const group: CrewGroup = {
       key: row.key,
       head: sessionMember({ ...row, helpers: regular }, isConducting, now),
       helpers: pickHelpers(regular, MAX_HELPERS_SHOWN).map(helper => helperMember(row, helper, now)),
       ...(workflow.length > 0 || row.phases.length > 0 ? { crowd: crowdOf(row, workflow, now) } : {}),
-    })
+    }
+    if (expanded) openDetail(group, row, expanded, now)
+    groups.push(group)
     if (row.doing.mood === 'waiting') needy += 1
     helpers += row.helpers.filter(helper => helper.endedAt === undefined).length
   }
@@ -1685,7 +1934,7 @@ export const buildView = (now: number, style: CrewStyle): CrewView => {
     groups.flatMap(group => [
       group.key,
       ...group.helpers.map(helper => helper.key),
-      ...(group.crowd?.phases.flatMap(phase => phase.chips.map(chip => chip.key)) ?? []),
+      ...(group.crowd?.runs.flatMap(run => run.phases.flatMap(phase => phase.chips.map(chip => chip.key))) ?? []),
     ]),
   )
   for (const key of shownMoods.keys()) if (!present.has(key)) shownMoods.delete(key)
