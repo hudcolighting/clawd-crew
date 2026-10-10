@@ -20,7 +20,7 @@
 </style>
 </head>
 <body>
-<p>A sample pane as the mod's own code draws it, shown with the desktop's cell sizes; its sessions and figures are made up. "Theme refresh" is running a workflow of 12 agents beside one Explore subagent: the subagent gets a row, the workflow its view by phase. Its Plan and Research phases are over, so their agents are put away and their lines stay, together; a little space sets off each phase still showing its agents. A line too long for its column, like verify:contrast's web search, is cut short.</p>
+<p>A sample pane as the mod's own code draws it, shown with the desktop's cell sizes; its sessions and figures are made up. At the current pace the 5-hour window runs out before it resets, so a warning sits under its bar, and the last day's cost shows as a sparkline. "Theme refresh" is running a workflow of 12 agents beside one Explore subagent: the subagent gets a row, and the workflow gets its view under its name, with how far it has got, by phase. Its Plan and Research phases are over, so their agents are put away and their lines stay, together; a little space sets off each phase still showing its agents. A line too long for its column, like verify:contrast's web search, is cut short. The ▸ beside each Clawd opens its detail: <code>pane.html?sample=pane-detail.json</code> shows the Explore subagent's.</p>
 <div class="pane" id="pane"></div>
 <script type="module">
   import { H, W } from '../hooks/sprites.js'
@@ -89,6 +89,7 @@
       if (p.color) s.color = p.color
       if (p.bold) s.fontWeight = 'bold'
       if (p.dimColor) s.opacity = '0.6'
+      if (p.wrap === 'wrap') s.whiteSpace = 'normal'
     }
     for (const child of [node.children ?? p.children ?? []].flat()) if (child !== false && child !== null) el.appendChild(draw(child))
     return el

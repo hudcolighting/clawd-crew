@@ -45,7 +45,7 @@ const PRICES: Readonly<Record<string, Price>> = {
 const FAST = new Set(['opus-5.5', 'opus-5', 'opus-4.8'])
 const WEB_SEARCH_USD = 0.01
 
-const SLOT_MS = 15 * 60_000
+export const SLOT_MS = 15 * 60_000
 const DAY_MS = 24 * 60 * 60_000
 // Today's and the week's totals reach no further back; older days live on
 // as daily totals.
@@ -582,6 +582,18 @@ export const usageSince = (from: number): Totals => {
     totals.usd += usd
   }
   return totals
+}
+
+// Every session's dollars in each of the last `count` quarter hours, the one
+// under way last.
+export const usageTrend = (now: number, count: number) => {
+  const first = (Math.floor(now / SLOT_MS) - count + 1) * SLOT_MS
+  const values = Array.from({ length: count }, () => 0)
+  for (const [start, , , usd] of slots) {
+    const at = (start - first) / SLOT_MS
+    if (at >= 0 && at < count) values[at] = (values[at] ?? 0) + usd
+  }
+  return values
 }
 
 // Every session's use, as far back as transcripts were kept when the history

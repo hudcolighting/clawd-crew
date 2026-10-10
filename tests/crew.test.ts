@@ -1,6 +1,7 @@
 import type { AgentInfo, SessionRateLimit } from 'claude-code'
 import { type TestBody, expect, mock, test } from 'claude-code/testing'
 
+import { parseTail, scriptMeta } from '../hooks/crew'
 import { ANIMATIONS, VARIANTS, framesOf } from '../hooks/sprites.js'
 
 const HOME = 'C:\\Users\\tester'
@@ -208,6 +209,7 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
     return { value: { isPlaced: true } }
   })
   on('ui.log', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
   on('fs.read', (_$, e) => {
     const path = pathOf(e.path)
     return files.has(path) ? { value: files.get(path)! } : { deny: 'ENOENT' }
@@ -585,7 +587,8 @@ test('draws every running session and helper as a Clawd', { timeoutMs: 30_000 },
   expect(mine).toContain('4 working · 32s · 341k tok')
   expect((await desk.find({ type: 'Client', key: `sprite:${PEER}:c11` }))?.props.props).toEqual({ mood: 'thinking', size: 'tiny' })
   expect(mine).toContain('Thinking…')
-  expect(mine).toContain('32s · 341k tok')
+  // Its time and tokens, beside the toggle of its detail: the unit gives way.
+  expect(mine).toContain('32s · 341k')
   // A long status is cut to its column (22 cells here: a 6-cell Clawd, a
   // space, 14 of text and one to spare), so it cannot run under its neighbor.
   expect(mine).toContain('Searching the…')
@@ -718,6 +721,12 @@ const pair = async (
     return { value: { isPlaced: true } }
   })
   on('ui.log', () => ({ value: undefined }))
+  // The line pinned under the prompt, each time it changes.
+  const statuses: (string | undefined)[] = []
+  on('ui.status', (_$, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
   on('fs.read', (_$, e) => {
     const path = pathOf(e.path)
     return files.has(path) ? { value: files.get(path)! } : { deny: 'ENOENT' }
@@ -752,6 +761,7 @@ const pair = async (
     files,
     asked,
     opened,
+    statuses,
     // A press, as a person makes one: apart from the last.
     press: async (key: string) => {
       await clock.advance(400)
@@ -924,7 +934,7 @@ test('the first click into the pane lands', { timeoutMs: 30_000 }, async ($, on)
   }
   const before = await handles()
   const drawnBefore = JSON.stringify(await session.desk.drawn())
-  expect(Object.keys(before)).toEqual(['settings'])
+  expect(Object.keys(before)).toEqual(['settings', `detail:${SELF}`, `detail:${PEER}`])
   await session.desk.redraw({ ...PANE.props, isFocused: true })
   for (let i = 0; i < 3; i++) await session.clock.advance(1_000)
   expect(JSON.stringify(await session.desk.drawn())).not.toBe(drawnBefore)
@@ -1146,6 +1156,8 @@ test("a workflow's agents show under their own run's phases", { timeoutMs: 30_00
     [`${OWN_RUNS}\\wf_a\\agent-a2.meta.json`]: meta('verify:links', 'Verify'),
     [`${OWN_RUNS}\\wf_b\\agent-b1.meta.json`]: meta('verify:pages', 'Verify'),
     [`${OWN_RUNS}\\wf_b\\agent-b2.meta.json`]: meta('explore:docs', 'Verify', 'Explore'),
+    // The second run's script, kept where its Workflow call's result says.
+    [`${OWN_PROJECT}\\${SELF}\\workflows\\wf_b.js`]: "export const meta = { name: 'page-check', phases: [{ title: 'Verify' }] }\nawait agent('x')",
     // The Weather app session's build of the mod published its workflow's
     // agent named, by its spawn, but with no phase: found in its folders.
     [`${PEER_PROJECT}\\${PEER}.jsonl`]: 'x',
@@ -1162,6 +1174,17 @@ test("a workflow's agents show under their own run's phases", { timeoutMs: 30_00
   }
   const ids: Record<string, string> = { 'research:cache': 'a1', 'verify:links': 'a2', 'verify:pages': 'b1', 'explore:docs': 'b2' }
   on('agent.spawn', (_$, e) => ({ model: 'claude-haiku-4-5-20251001', agentId: ids[e.description]! }))
+  // Each Workflow call launches its run in the background, the result naming
+  // it: the first by the call's inline script, the second by its kept one.
+  on('tool.call', (_$, e) => {
+    if (e.tool !== 'Workflow') return { result: 'ok', text: 'ok' }
+    const runId = e.tool_use_id === 'toolu_wf_a' ? 'wf_a' : 'wf_b'
+    const result =
+      runId === 'wf_a'
+        ? { status: 'async_launched', taskId: 'task_a', runId, workflowName: 'cache-audit' }
+        : { status: 'async_launched', taskId: 'task_b', runId, scriptPath: `${OWN_PROJECT}\\${SELF}\\workflows\\wf_b.js` }
+    return { result, text: `Launched ${runId}` } as never
+  })
   on('turn.step', async function* (_$, e) {
     yield { kind: 'thinking', index: 0, text: 'hmm' }
     return {
@@ -1174,6 +1197,13 @@ test("a workflow's agents show under their own run's phases", { timeoutMs: 30_00
     }
   })
   const session = await pair($, on, { status: 'busy', statusUpdatedAt: NOW - 5_000 }, { seed, dirs: { [OWN_RUNS]: ['wf_a', 'wf_b'], [PEER_RUNS]: ['wf_p'] } })
+  const script = `export const meta = {
+  name: 'cache-audit',
+  description: 'Audit the caches',
+  phases: [{ title: 'Research' }, { title: 'Verify' }, { title: 'Ship' }],
+}`
+  await $.tool.call({ tool: 'Workflow', tool_use_id: 'toolu_wf_a', script } as never)
+  await $.tool.call({ tool: 'Workflow', tool_use_id: 'toolu_wf_b', name: 'page-check' } as never)
   const spawn = (description: string, subagentType: string, runId: string, agentIndex: number) =>
     $.agent.spawn({ tool_use_id: `toolu_${runId}`, prompt: description, description, subagentType, background: true, workflow: { runId, agentIndex } } as never)
   await spawn('research:cache', 'workflow-subagent', 'wf_a', 1)
@@ -1206,6 +1236,104 @@ test("a workflow's agents show under their own run's phases", { timeoutMs: 30_00
   expect(texts[texts.indexOf('Clawd mod (this one)') + 1]).toBe('Waiting on 4 helpers')
   expect(texts.indexOf('Weather app')).toBeLessThan(texts.indexOf('Test'))
   expect(texts.indexOf('Test')).toBeLessThan(texts.indexOf('test:units'))
+  // Each run under its workflow's name: how far through the phases its
+  // script declares, and how many of its agents so far are done. The peer's
+  // run, which named none, goes by "Workflow".
+  expect(texts.indexOf('cache-audit')).toBeLessThan(texts.indexOf('Research'))
+  expect(texts).toContain('phase 2 of 3 · 0 of 2 agents done')
+  expect(texts.indexOf('page-check')).toBeGreaterThan(texts.indexOf('verify:links'))
+  expect(texts.indexOf('page-check')).toBeLessThan(texts.indexOf('verify:pages'))
+  expect(texts).toContain('phase 1 of 1 · 0 of 2 agents done')
+  expect(texts.indexOf('Workflow')).toBeGreaterThan(texts.indexOf('Weather app'))
+  expect(JSON.parse(session.files.get(`${LIVE}\\${SELF}.json`) ?? '{}').runs).toEqual([
+    { run: 'wf_a', name: 'cache-audit', phases: ['Research', 'Verify', 'Ship'], startedAt: expect.any(Number) },
+    { run: 'wf_b', name: 'page-check', phases: ['Verify'], startedAt: expect.any(Number) },
+  ])
+  // One agent finished: its run counts it.
+  await $.turn.complete({ answer: 'done', durationMs: 1_000, isAborted: false, turnId: 't_a1', agentId: 'a1', reason: 'answer' })
+  for (let i = 0; i < 2; i++) await session.clock.advance(1_000)
+  expect(await session.texts()).toContain('phase 2 of 3 · 1 of 2 agents done')
+
+  // A workflow agent's detail opens under its phase: its whole task, its
+  // workflow and phase, its model and time, its tokens, and its steps.
+  await session.press(`detail:${SELF}:a2`)
+  let open = await session.texts()
+  expect(open).toContain('Task: verify:links')
+  expect(open).toContain('Workflow: cache-audit · phase Verify')
+  expect(open.some(text => /^Haiku 4\.5 · started \d+s ago$/.test(text))).toBe(true)
+  expect(open).toContain('1k tok in all · 100 out · 1k ctx')
+  expect(open).toContain('No steps seen yet')
+  // A session's: its folder, how long it has been open, and its last steps,
+  // the latest first.
+  await session.press(`detail:${SELF}`)
+  open = await session.texts()
+  expect(open).not.toContain('Task: verify:links')
+  expect(open).toContain('Folder: C:\\work\\clawd-mod')
+  expect(open).toContain('Open for 1h 00m')
+  expect(open).toContain('Last steps:')
+  expect(open.filter(text => /^\d+s ago · Running a workflow$/.test(text))).toHaveLength(2)
+  // Pressed again, it closes.
+  await session.press(`detail:${SELF}`)
+  expect(await session.texts()).not.toContain('Last steps:')
+})
+
+test('reads a workflow script\'s name and phases, and a transcript\'s last steps', async () => {
+  expect(scriptMeta("export const meta = { name: 'review', description: 'a {b}', phases: [{ title: 'Find' }, { title: \"Check \\\"it\\\"\" }] }\nphase('Find')")).toEqual({
+    name: 'review',
+    phases: ['Find', 'Check "it"'],
+  })
+  expect(scriptMeta('await agent("no meta")')).toEqual({})
+  const tail = [
+    { type: 'assistant', timestamp: iso(NOW - 60_000), message: { model: 'claude-opus-5-5', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'C:\\a\\b.ts' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } },
+    { type: 'assistant', timestamp: iso(NOW), message: { model: 'claude-opus-5-5', content: [{ type: 'tool_use', id: 't2', name: 'Grep', input: { pattern: 'cache' } }] } },
+  ]
+    .map(row => JSON.stringify(row))
+    .join('\n')
+  expect(parseTail(tail).recent).toEqual([
+    [NOW - 60_000, 'Reading b.ts'],
+    [NOW, 'Searching for "cache"'],
+  ])
+})
+
+test('the limits warn of running out, a sparkline shows the day, and a line sits under the prompt', { timeoutMs: 30_000 }, async ($, on) => {
+  // Another session counts the transcripts: a dollar in each of four quarter
+  // hours of the last two, the first of them before the last hour.
+  const slots = [90, 45, 15, 0].map(minutes => [NOW - minutes * 60_000, 10_000, 1_000, 1])
+  const seed = { [USAGE]: JSON.stringify({ v: 1, leader: PEER, heartbeat: NOW, isCounted: true, isSeeded: true, slots, days: [] }) }
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const session = await pair($, on, { status: 'idle', statusUpdatedAt: NOW - 5_000 }, { seed })
+  // The 5-hour window opened two hours ago and is 60% used: 15% a dollar,
+  // and the last hour's $3 is 45% an hour, so the 40% left lasts 53 minutes,
+  // well before it resets. The week, 5% used in its first day, lasts.
+  await $.session.measure({
+    context: { window: 200_000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 60, resetsAt: iso(NOW + 3 * HOUR) },
+      { kind: 'seven_day', percentUsed: 5, resetsAt: iso(NOW + 6 * DAY) },
+    ],
+    changed: ['rateLimits'],
+  })
+  await session.clock.advance(1_000)
+  const texts = await session.texts()
+  expect(texts[texts.indexOf('5-hour') + 3]).toBe('out in 53m at this pace')
+  expect(texts.filter(text => text.endsWith('at this pace'))).toHaveLength(1)
+  // The last day's cost and what it comes to: an hour a bar in this pane's
+  // room, so $1 the hour before last and $3 the last, a bar a line high at
+  // most, in eighths.
+  expect(texts[texts.indexOf('24h') + 1]).toBe('$4.00')
+  const bars = (await session.desk.findAll({ type: 'Box' })).filter(found => found.props.width === 0.75 && found.props.backgroundColor === BODY)
+  expect(bars.map(found => found.props.height)).toEqual([0.375, 1])
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await term.findAll({ type: 'Text' })).map(found => found.text)).toContain(`${' '.repeat(22)}▃█`)
+  // The line under the prompt: the crew, and each limit's share left.
+  expect(session.statuses.at(-1)).toBe('Clawd Crew · 2 sessions · 5-hour 40% left, out in 53m at this pace · Weekly 95% left')
+  // Off in the settings, for every session, and the line goes; on, it is back.
+  await session.press('settings')
+  await session.press('status-off')
+  expect(session.statuses.at(-1)).toBeUndefined()
+  await session.press('status-on')
+  expect(session.statuses.at(-1)).toMatch(/^Clawd Crew · 2 sessions · /)
 })
 
 test("a helper the engine holds or rests is not taken for stopped", { timeoutMs: 30_000 }, async ($, on) => {

@@ -18,6 +18,9 @@ export type CrewMember = {
   tone: CrewTone
   isAgent: boolean
   isSelf: boolean
+  /** Its detail, once opened: its task or folder, model and times, tokens,
+   * and its last few steps. Only the member opened has one. */
+  detail?: string[]
 }
 
 /** A helper in a crowd: a tiny Clawd beside three short lines. */
@@ -32,6 +35,8 @@ export type CrewChip = {
   /** How long it has worked and the tokens it used: "2m · 341k tok". */
   fact: string
   tone: CrewTone
+  /** Its detail, once opened, as a `CrewMember`'s. */
+  detail?: string[]
 }
 
 /** One workflow phase (or the helpers of no phase). */
@@ -48,9 +53,20 @@ export type CrewPhase = {
   chips: CrewChip[]
 }
 
-/** A session's workflow agents, by phase, however many or few. */
-export type CrewCrowd = {
+/** One workflow run: its name and how far it has got, over its phases. */
+export type CrewRun = {
+  key: string
+  /** The workflow's name ("review-changes"), "Workflow" when unknown, or
+   * empty for helpers of no run, which draw no line of their own. */
+  title: string
+  /** "phase 2 of 4 · 7 of 12 agents done". */
+  summary: string
   phases: CrewPhase[]
+}
+
+/** A session's workflow agents, by run and phase, however many or few. */
+export type CrewCrowd = {
+  runs: CrewRun[]
   /** Helpers left out past the most a crowd shows. */
   more: number
 }
@@ -80,6 +96,9 @@ export type CrewLimit = {
   /** "resets in 2h 14m"; empty when the API gave no reset time. */
   resets: string
   tone: CrewTone
+  /** "out in 1h 40m at this pace" when the recent pace uses the window up
+   * before it resets; empty otherwise. */
+  pace: string
 }
 
 /** What every session used over a stretch of time, closed ones included. */
@@ -87,6 +106,17 @@ export type CrewTotal = {
   /** "Today", "Week", "Total". */
   label: string
   /** "12.3M in · 140k out · $38.20", or "counting…" until counted. */
+  text: string
+}
+
+/** The cost of every session's calls over the last day, a quarter hour at a
+ * time, for a sparkline. */
+export type CrewTrend = {
+  /** "24h". */
+  label: string
+  /** Dollars in each quarter hour, oldest first: 96 of them. */
+  values: number[]
+  /** What they come to: "$12.40". */
   text: string
 }
 
@@ -98,6 +128,8 @@ export type CrewHeader = {
   note: string
   /** Today's use, the weekly limit window's, and all of it. */
   totals: CrewTotal[]
+  /** The last day's use, once counted and when there was any. */
+  trend?: CrewTrend
 }
 
 export type CrewView = {
@@ -114,6 +146,10 @@ export type CrewView = {
   opensItself?: boolean
   /** Which page of the settings it shows, from 0. */
   settingsPage?: number
+  /** Whether every session pins a line of the crew under its prompt. */
+  showsStatus?: boolean
+  /** The key of the member or chip whose detail is open. */
+  expanded?: string
 }
 
 declare module 'claude-code' {
