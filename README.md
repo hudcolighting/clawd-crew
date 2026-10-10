@@ -8,7 +8,7 @@ An unofficial fan project, not made by or affiliated with Anthropic ([disclaimer
 
 ## Install
 
-**You need** Claude Code with hooks modules, the early-access part of its plugin system this mod is built on (it is made against Claude Code 2.1.286, and a later release may change that system). It runs in the desktop app, where the pane docks on the right, and in a terminal. On Windows nothing else is needed. On macOS and Linux, the usage totals need `python3`. It is written for all three and tested on Windows.
+**You need** Claude Code with hooks modules, the early-access part of its plugin system this mod is built on (it is made against Claude Code 2.1.296, and a later release may change that system). It runs in the desktop app, where the pane docks on the right, and in a terminal. On Windows nothing else is needed. On macOS and Linux, the usage totals need `python3`. It is written for all three and tested on Windows; its engine tests pass on Linux too.
 
 **From the marketplace**, in a terminal:
 
@@ -49,7 +49,7 @@ To try it in one session only, start that session with `claude --plugin-dir <fol
 Every session is a Clawd with three or four lines beside it: its name, what it is doing, its model and how long it has been working (or idle), and its context, output tokens and cost. The session whose pane you are looking at is always on top. Below it come the others, oldest first, with sleeping ones (idle for more than 10 minutes) below all the awake ones.
 
 - **Subagents** show as smaller Clawds under the session that started them, with their type and task ("Explore · Map the theme tokens"), at most 8 at a time. Each stays 12 seconds after it finishes.
-- **Workflows** get a view of their own: their agents in two columns under the workflow's phases, each a tiny Clawd beside its name, what it is doing and the tokens it has used. Each phase has a line with its agents' counts, its time and its tokens. A finished phase folds into one line, checked off in green or crossed off in red, and the phase lines go 3 minutes after the workflow's last agent finishes. While a session runs a workflow, its Clawd conducts the crowd from a podium.
+- **Workflows** get a view of their own: their agents in two columns under the workflow's phases (two workflows' phases apart, however alike their names), each a tiny Clawd beside its name, what it is doing and the tokens it has used. Each phase has a line with its agents' counts, its time and its tokens. A finished phase folds into one line, checked off in green or crossed off in red, and the phase lines go 3 minutes after the workflow's last agent finishes. While a session runs a workflow, its Clawd conducts the crowd from a podium.
 - **A session waiting on its helpers**, between steps of its own, shows "Waiting on 2 helpers" and delegates (or rallies, for a workflow) rather than thinking; a tool call or step of its own shows as itself.
 - **A session at work in the background**, such as a workflow running between phases, shows "Working in the background" rather than napping.
 
@@ -91,7 +91,7 @@ The header has six lines:
 
 There is nothing to set up, but each kind arrives its own way:
 
-1. **The limits** need a Claude subscription. Claude Code reads them from every reply, and the mod shows the freshest reading any session has, keeping it in `~/.claude/clawd-crew/limits.json` so a new session shows them at once. On the very first start there is no reading yet, so rather than wait for your first reply, the mod asks for one itself with a one-token request ([below](#what-it-does-on-your-machine)). Signed in with an API key there are no limits, and the two lines stay hidden.
+1. **The limits** need a Claude subscription. Claude Code reads them from every reply, and the mod shows the freshest reading any session has, so a change of plan shows with your next reply, keeping it in `~/.claude/clawd-crew/limits.json` so a new session shows them at once. On the very first start there is no reading yet, so rather than wait for your first reply, the mod asks for one itself with a one-token request ([below](#what-it-does-on-your-machine)). Signed in with an API key there are no limits, and the two lines stay hidden.
 2. **The totals** are counted from the transcripts Claude Code keeps in `~/.claude/projects`, which record every call's tokens. The first time, one session reads every transcript you have, which takes a minute or so for a long history; until then the lines say "counting…". After that they keep up within about 20 seconds.
 3. **If a line stays empty**: "counting…" for more than a few minutes on macOS or Linux means `python3` is missing from your PATH. No 5-hour or Weekly lines on a subscription means no reading came yet: send any message and they show after its reply.
 

@@ -184,12 +184,13 @@ const askLimits = async ($: EngineInterface, io: Io) => {
   isAsking = true
   try {
     const usage = await $.session.usage()
-    track.measured(usage.context, usage.cost, usage.rateLimits)
+    track.measured(usage.context, usage.cost, usage.rateLimits, await $.clock.now())
     if (!(await shouldAskLimits(io, await $.clock.now()))) return
-    await $.model.complete({ model: 'haiku', prompt: 'Reply with OK.', maxTokens: 1, timeoutMs: 30_000 }).catch(() => undefined)
-    const answered = await $.session.usage()
-    track.measured(answered.context, answered.cost, answered.rateLimits)
+    const reply = await $.model.complete({ model: 'haiku', prompt: 'Reply with OK.', maxTokens: 1, timeoutMs: 30_000 }).catch(() => undefined)
     const now = await $.clock.now()
+    if (reply?.isAnswered) track.called(now)
+    const answered = await $.session.usage()
+    track.measured(answered.context, answered.cost, answered.rateLimits, now)
     await limitsAsked(io, now, answered.rateLimits.length > 0)
     await shareLimits(io, now)
     await refresh($, now)
@@ -215,7 +216,7 @@ const tick = async ($: EngineInterface, io: Io) => {
     if (ticks % 2 === 0) void nameHelpers(io, now)
     if (ticks % 5 === 0) {
       const usage = await $.session.usage()
-      track.measured(usage.context, usage.cost, usage.rateLimits)
+      track.measured(usage.context, usage.cost, usage.rateLimits, now)
     }
     if (ticks % 5 === 1) void pollUsage(io, me.sessionId, now)
     // A setting changed in another session's settings.
@@ -334,7 +335,7 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e, next) => {
     const spawned = await next(e)
-    if (spawned.agentId) track.spawned(spawned.agentId, e.subagentType, e.description, spawned.model, await $.clock.now())
+    if (spawned.agentId) track.spawned(spawned.agentId, e.subagentType, e.description, spawned.model, await $.clock.now(), e.workflow?.runId)
     return spawned
   })
 
@@ -347,8 +348,8 @@ export const register: Register = on => {
     }
   })
 
-  on('session.measure', ($, e, next) => {
-    track.measured(e.context, e.cost, e.rateLimits)
+  on('session.measure', async ($, e, next) => {
+    track.measured(e.context, e.cost, e.rateLimits, await $.clock.now())
     return next(e)
   })
 
